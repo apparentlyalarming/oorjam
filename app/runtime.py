@@ -119,6 +119,13 @@ class AuditorRuntime:
         }
         rt._prewarm_engines(settings)
         rt.store = await create_store(settings)
+        if rt.store is not None:
+            try:
+                past = await rt.store.recent_anomalies(limit=settings.max_anomaly_history)
+                rt.anomalies = past
+                rt.log.add(f"anomaly history hydrated: {len(past)} closed event(s)")
+            except Exception:  # pragma: no cover - streaming backends may be cold
+                rt.log.add("anomaly history unavailable at boot")
         rt.log.add(
             f"runtime ready · detector={'loaded' if rt.detector else 'missing'} · "
             f"storage={rt.store.kind if rt.store else 'n/a'}"

@@ -95,6 +95,7 @@
 const HEX = {green:'#22c55e', red:'#ef4444', orange:'#f97316', yellow:'#eab308'};
 const MAX = 360;
 let upBase = 0;
+const seenAnoms = new Set();
 const zoneId = () => document.getElementById('zone-select').value;
 
 const chartDefs = [
@@ -186,6 +187,9 @@ function renderReport(rep){
 }
 
 function pushAnomaly(a){
+  const key = `${a.start_timestamp}|${a.zone_id}|${a.diagnosis}`;
+  if (seenAnoms.has(key)) return;   // already rendered (history + WS can overlap)
+  seenAnoms.add(key);
   const feed = document.getElementById('feed');
   if (feed.firstChild && feed.firstChild.textContent.startsWith('Waiting')) feed.innerHTML='';
   const el = document.createElement('div');
@@ -195,6 +199,13 @@ function pushAnomaly(a){
     `<span class="spacer"></span>${a.energy_wasted_kwh.toFixed(2)} kWh · $${a.financial_waste_usd.toFixed(2)}`;
   feed.prepend(el);
   while (feed.children.length > 60) feed.lastChild.remove();
+}
+
+async function loadAnomalyHistory(){
+  try{
+    const anoms = await (await fetch('/api/anomalies')).json();
+    [...anoms].reverse().forEach(a => pushAnomaly(a));
+  }catch(e){}
 }
 
 async function refresh(initial=false){
@@ -239,6 +250,7 @@ function connect(){
     } else if (msg.type === 'point') pushPoint(msg.point);
     else if (msg.type === 'anomaly') pushAnomaly(msg.anomaly);
   };
+  ws.onopen = () => loadAnomalyHistory();
   ws.onclose = () => setTimeout(connect, 1500);
 }
 connect();
