@@ -27,6 +27,9 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        # ``model_dir`` intentionally starts with ``model_``; the generated
+        # defaults would otherwise collide with pydantic's protected namespace.
+        protected_namespaces=(),
     )
 
     # ---- Hosting / web -----------------------------------------------------
