@@ -24,6 +24,20 @@
   .zone-head h2{margin:0;font-size:15px}
   .pill{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--muted);background:#0b1220}
   .faults{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .occupancy-control{margin:4px 0 14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#172235}
+  .occupancy-control label{display:block;color:var(--muted);font-size:11px;margin-bottom:6px}
+  .occupancy-row{display:flex;gap:8px;align-items:center}
+  .occupancy-row input{width:100px;background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px}
+  .occupancy-row button{padding:9px 12px}
+  .occupancy-note{font-size:11px;color:var(--muted);margin-top:7px}
+  details.sensor-controls{margin:4px 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#172235}
+  details.sensor-controls summary{cursor:pointer;color:var(--text);font-size:12px;font-weight:600}
+  .sensor-list{display:grid;gap:7px;margin-top:10px}
+  .sensor-row{display:grid;grid-template-columns:minmax(120px,1fr) 100px auto auto;gap:7px;align-items:center}
+  .sensor-row label{font-size:11px;color:var(--muted)}
+  .sensor-row input{width:100%;background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:7px}
+  .sensor-row button{padding:7px 9px}
+  @media(max-width:560px){.sensor-row{grid-template-columns:1fr 90px}.sensor-row button{width:100%}}
   button{font-size:12.5px;border-radius:9px;padding:10px 10px;cursor:pointer;border:1px solid var(--line);
          background:#0b1220;color:var(--text);text-align:left;transition:all .12s}
   button:hover{border-color:var(--orange)}
@@ -59,6 +73,15 @@ const KINDS = [
   {key:'equipment_drift',     label:'Trigger Equipment Drift',        desc:'permanent plug-load step ~+3.4 kW'},
 ];
 const HEX = {green:'#22c55e', red:'#ef4444', orange:'#f97316', yellow:'#eab308'};
+const SENSOR_METRICS = [
+  {key:'co2_ppm',label:'CO₂',unit:'ppm',min:350,max:5000,step:10},
+  {key:'humidity_percent',label:'Humidity',unit:'%',min:0,max:100,step:1},
+  {key:'temp_indoor_c',label:'Indoor temperature',unit:'°C',min:-20,max:60,step:0.1},
+  {key:'temp_outdoor_c',label:'Outdoor temperature',unit:'°C',min:-20,max:60,step:0.1},
+  {key:'hvac_kw',label:'HVAC power',unit:'kW',min:0,max:100,step:0.1},
+  {key:'lighting_kw',label:'Lighting power',unit:'kW',min:0,max:100,step:0.1},
+  {key:'plug_load_kw',label:'Plug power',unit:'kW',min:0,max:100,step:0.1},
+];
 const zoneState = {};   // zone -> Set(active kinds)
 const controls = {};    // zone.kind -> button ref
 let ws = null;
@@ -84,10 +107,60 @@ function buildZones(zones, kinds){
         <div class="spacer"></div>
         <button class="ghost" id="reset-${zone}">Reset zone</button>
       </div>
+      <div class="occupancy-control">
+        <label for="occupancy-${zone}">Simulated occupancy (0–${zin.occupancy_max})</label>
+        <div class="occupancy-row">
+          <input id="occupancy-${zone}" type="number" min="0" max="${zin.occupancy_max}" value="0">
+          <button id="set-occupancy-${zone}">Set occupancy</button>
+          <button class="ghost" id="clear-occupancy-${zone}">Resume normal</button>
+        </div>
+        <div class="occupancy-note" id="occupancy-note-${zone}">Normal simulated occupancy · power follows its normal daily pattern</div>
+      </div>
+      <details class="sensor-controls">
+        <summary>Override other telemetry values</summary>
+        <div class="sensor-list" id="sensors-${zone}"></div>
+        <div class="occupancy-note">Overrides change the reported sensor value; normal power generation continues unless a power meter is overridden.</div>
+      </details>
       <div class="faults" id="faults-${zone}"></div>`;
     wrap.appendChild(card);
 
     const faults = card.querySelector('#faults-'+zone);
+    const occupancyInput = card.querySelector('#occupancy-'+zone);
+    card.querySelector('#set-occupancy-'+zone).addEventListener('click', () => {
+      const value = Number(occupancyInput.value);
+      if (!Number.isInteger(value) || value < 0 || value > zin.occupancy_max) {
+        occupancyInput.setCustomValidity(`Enter a whole number from 0 to ${zin.occupancy_max}`);
+        occupancyInput.reportValidity();
+        return;
+      }
+      occupancyInput.setCustomValidity('');
+      send({action:'set_occupancy', zone, occupancy:value});
+    });
+    occupancyInput.addEventListener('input', () => occupancyInput.setCustomValidity(''));
+    card.querySelector('#clear-occupancy-'+zone).addEventListener('click', () => send({action:'clear_occupancy', zone}));
+    const sensorList = card.querySelector('#sensors-'+zone);
+    SENSOR_METRICS.forEach(metric => {
+      const row = document.createElement('div');
+      row.className = 'sensor-row';
+      row.innerHTML = `<label for="${metric.key}-${zone}">${metric.label} (${metric.unit})</label>`+
+        `<input id="${metric.key}-${zone}" type="number" min="${metric.min}" max="${metric.max}" step="${metric.step}">`+
+        `<button id="set-${metric.key}-${zone}">Set</button>`+
+        `<button class="ghost" id="clear-${metric.key}-${zone}">Resume</button>`;
+      sensorList.appendChild(row);
+      const input = row.querySelector('input');
+      row.querySelector('button:not(.ghost)').addEventListener('click', () => {
+        const value = Number(input.value);
+        if (!Number.isFinite(value) || value < metric.min || value > metric.max) {
+          input.setCustomValidity(`Enter a value from ${metric.min} to ${metric.max}`);
+          input.reportValidity();
+          return;
+        }
+        input.setCustomValidity('');
+        send({action:'set_metric', zone, metric:metric.key, value});
+      });
+      row.querySelector('.ghost').addEventListener('click', () => send({action:'clear_metric', zone, metric:metric.key}));
+      input.addEventListener('input', () => input.setCustomValidity(''));
+    });
     kinds.forEach(kind => {
       const btn = document.createElement('button');
       const meta = KINDS.find(k => k.key === kind) || {};
@@ -119,6 +192,22 @@ function renderState(state){
   zoneState[state.zone] = new Set(state.active || []);
   const pill = document.getElementById('state-'+state.zone);
   if (pill) pill.textContent = state.injected_state || 'normal';
+  const occupancyNote = document.getElementById('occupancy-note-'+state.zone);
+  const occupancyInput = document.getElementById('occupancy-'+state.zone);
+  if (occupancyNote) {
+    occupancyNote.textContent = state.occupancy_override === null || state.occupancy_override === undefined
+      ? 'Normal simulated occupancy · power follows its normal daily pattern'
+      : `Occupancy fixed at ${state.occupancy_override} · power is unchanged by this control`;
+  }
+  if (occupancyInput) occupancyInput.value = state.occupancy_override ?? 0;
+  SENSOR_METRICS.forEach(metric => {
+    const input = document.getElementById(`${metric.key}-${state.zone}`);
+    if (input && state.sensor_overrides && state.sensor_overrides[metric.key] !== undefined) {
+      input.value = state.sensor_overrides[metric.key];
+    } else if (input) {
+      input.value = '';
+    }
+  });
   KINDS.forEach(k => {
     const b = controls[state.zone+'.'+k.key];
     if (b) b.classList.toggle('active', isActive(state.zone, k.key));

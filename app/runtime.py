@@ -192,7 +192,28 @@ class AuditorRuntime:
     def apply_command(self, cmd: SimulatorCommand) -> InjectionState:
         """Apply an injection-panel command and return the affected zone state."""
         kind = cmd.anomaly
-        if cmd.action == "inject" and kind is not None:
+        if cmd.action == "set_occupancy" and cmd.occupancy is not None:
+            zone = next((z for z in ZONE_CATALOG if z.zone_id == cmd.zone), None)
+            if zone is not None:
+                occupancy = min(zone.occupancy_max, cmd.occupancy)
+                self.controller.set_occupancy(cmd.zone, occupancy)
+                self.log.add(f"set occupancy {occupancy} -> {cmd.zone} (power unchanged)")
+        elif cmd.action == "set_metric" and cmd.metric in {
+            "co2_ppm", "humidity_percent", "temp_indoor_c", "temp_outdoor_c",
+            "hvac_kw", "lighting_kw", "plug_load_kw",
+        } and cmd.value is not None:
+            self.controller.set_sensor_override(cmd.zone, cmd.metric, cmd.value)
+            self.log.add(f"override {cmd.metric}={cmd.value:g} -> {cmd.zone}")
+        elif cmd.action == "clear_metric" and cmd.metric in {
+            "co2_ppm", "humidity_percent", "temp_indoor_c", "temp_outdoor_c",
+            "hvac_kw", "lighting_kw", "plug_load_kw",
+        }:
+            self.controller.clear_sensor_override(cmd.zone, cmd.metric)
+            self.log.add(f"clear {cmd.metric} override -> {cmd.zone}")
+        elif cmd.action == "clear_occupancy":
+            self.controller.clear_occupancy(cmd.zone)
+            self.log.add(f"clear occupancy override -> {cmd.zone}")
+        elif cmd.action == "inject" and kind is not None:
             self.controller.inject(cmd.zone, kind)
             self.log.add(f"inject {kind.value} -> {cmd.zone}")
         elif cmd.action == "clear" and kind is not None:
@@ -249,12 +270,17 @@ class AuditorRuntime:
             zone=zone,
             active=sorted(active),
             injected_state=self.controller.state_string(zone),
+            occupancy_override=self.controller.occupancy_override(zone),
+            sensor_overrides=self.controller.sensor_overrides(zone),
         )
 
     def controller_snapshot(self) -> Dict[str, dict]:
         return {
-            zone_id: self.injection_state(zone_id).model_dump()
-            for zone_id in (z.zone_id for z in ZONE_CATALOG)
+            z.zone_id: {
+                **self.injection_state(z.zone_id).model_dump(),
+                "occupancy_max": z.occupancy_max,
+            }
+            for z in ZONE_CATALOG
         }
 
     # ------------------------------------------------------------------ sink

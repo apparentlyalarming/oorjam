@@ -38,6 +38,26 @@ class InjectionController:
 
     def __init__(self) -> None:
         self._active: Dict[str, Set[str]] = defaultdict(set)
+        self._occupancy_override: Dict[str, int] = {}
+        self._sensor_overrides: Dict[str, Dict[str, float]] = defaultdict(dict)
+
+    def set_occupancy(self, zone: str, occupancy: int) -> None:
+        self._occupancy_override[zone] = max(0, occupancy)
+
+    def occupancy_override(self, zone: str) -> int | None:
+        return self._occupancy_override.get(zone)
+
+    def clear_occupancy(self, zone: str) -> None:
+        self._occupancy_override.pop(zone, None)
+
+    def set_sensor_override(self, zone: str, metric: str, value: float) -> None:
+        self._sensor_overrides[zone][metric] = value
+
+    def clear_sensor_override(self, zone: str, metric: str) -> None:
+        self._sensor_overrides.get(zone, {}).pop(metric, None)
+
+    def sensor_overrides(self, zone: str) -> Dict[str, float]:
+        return dict(self._sensor_overrides.get(zone, {}))
 
     def snapshot(self) -> Dict[str, Dict[str, object]]:
         return {
@@ -56,9 +76,13 @@ class InjectionController:
 
     def clear_all(self, zone: str) -> None:
         self._active.pop(zone, None)
+        self._occupancy_override.pop(zone, None)
+        self._sensor_overrides.pop(zone, None)
 
     def reset(self) -> None:
         self._active.clear()
+        self._occupancy_override.clear()
+        self._sensor_overrides.clear()
 
     def is_active(self, zone: str, kind: AnomalyKind) -> bool:
         return kind.value in self._active.get(zone, ())
@@ -126,6 +150,12 @@ class TelemetryGenerator:
         factor = max(0.0, diurnal_factor(hour_fraction) * weekend_scale) * rng.uniform(0.95, 1.05)
 
         occupancy = max(0, min(z.occupancy_max, int(z.occupancy_max * factor + rng.gauss(0.0, z.occupancy_max * 0.04))))
+        load_occupancy = occupancy
+        occupancy_override = self.controller.occupancy_override(z.zone_id)
+        if occupancy_override is not None:
+            # Override only the occupancy sensor; load stays generated from
+            # the normal daily pattern so mismatch scenarios can be simulated.
+            occupancy = min(z.occupancy_max, occupancy_override)
 
         co2_ppm = max(350.0, 400.0 + occupancy * z.co2_per_occupant_ppm + rng.gauss(0.0, 45.0))
         # Normal relative humidity stays in the ~45-65% band even at peak
@@ -137,10 +167,10 @@ class TelemetryGenerator:
         temp_indoor_c = 22.0 + 0.04 * (temp_outdoor_c - 23.0) + rng.gauss(0.0, 0.35)
 
         delta_t = max(0.0, temp_outdoor_c - temp_indoor_c)  # positive -> cooling duty
-        hvac_kw = z.hvac_base_kw + 1.7 * delta_t + 0.22 * occupancy + 0.5 * z.hvac_base_kw * factor + rng.gauss(0.0, 0.8)
+        hvac_kw = z.hvac_base_kw + 1.7 * delta_t + 0.22 * load_occupancy + 0.5 * z.hvac_base_kw * factor + rng.gauss(0.0, 0.8)
 
-        lighting_kw = max(0.4, 1.6 + 0.135 * occupancy + rng.gauss(0.0, 0.35))
-        plug_load_kw = max(0.8, 5.5 + 0.10 * occupancy + 0.5 * (0.02 * z.occupancy_max) * factor + rng.gauss(0.0, 0.5))
+        lighting_kw = max(0.4, 1.6 + 0.135 * load_occupancy + rng.gauss(0.0, 0.35))
+        plug_load_kw = max(0.8, 5.5 + 0.10 * load_occupancy + 0.5 * (0.02 * z.occupancy_max) * factor + rng.gauss(0.0, 0.5))
 
         return TelemetryPoint(
             timestamp=_now_iso(),
@@ -200,6 +230,8 @@ class TelemetryGenerator:
             hour_fraction = now.hour + now.minute / 60.0 + now.second / 3600.0
             point = self._normal_sample(now, hour_fraction)
             self._apply_faults(point)
+            for metric, value in self.controller.sensor_overrides(point.zone_id).items():
+                setattr(point.telemetry, metric, int(value) if metric == "occupancy_count" else value)
             point.injected_state = self.controller.state_string(point.zone_id)
             # Round rounded metrics again so results are stable for storage.
             point.telemetry.hvac_kw = round(point.telemetry.hvac_kw, 3)

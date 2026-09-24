@@ -31,6 +31,14 @@
   .chart-panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
   .chart-panel h3{margin:0 0 6px;font-size:13px;color:var(--muted)}
   .chart-wrap{position:relative;height:210px}
+  .live-heading{display:flex;align-items:baseline;gap:10px;margin:0 0 8px;color:var(--muted);font-size:12px}
+  .live-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+  .live-metric{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+  .live-metric .label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .live-metric .value{font-size:19px;font-weight:650;margin-top:3px}
+  .alert-banner{display:none;margin:0 0 14px;padding:12px 15px;border:1px solid #ef4444;border-radius:10px;background:#451a1a;color:#fee2e2}
+  .alert-banner.visible{display:flex;align-items:center;gap:10px}
+  .alert-banner button{margin-left:auto;background:transparent;border:1px solid #fca5a5;color:#fee2e2;border-radius:7px;padding:5px 9px;cursor:pointer}
   .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px}
   .toolbar select{background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px}
   .legend{display:flex;gap:14px;font-size:12px;color:var(--muted)}
@@ -54,6 +62,10 @@
   <span class="badge">uptime <span id="up">0</span>s</span>
 </header>
 <main>
+  <div class="alert-banner" id="anomaly-alert" role="alert" aria-live="assertive">
+    <b>⚠ Anomaly detected</b><span id="anomaly-alert-text"></span>
+    <button id="dismiss-alert">Dismiss</button>
+  </div>
   <div class="kpis">
     <div class="kpi"><div class="label">Energy wasted</div><div class="value" id="kpi-kwh">0.00 kWh</div></div>
     <div class="kpi"><div class="label">Financial waste</div><div class="value" id="kpi-usd">$0.00</div></div>
@@ -73,6 +85,9 @@
     <div class="spacer"></div>
     <button id="btn-report" style="background:#0b1220;color:var(--yellow);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px">Download report (md)</button>
   </div>
+
+  <div class="live-heading"><b>Live telemetry</b><span id="live-updated">Waiting for selected zone data…</span></div>
+  <div class="live-grid" id="live-metrics"></div>
 
   <div class="charts-grid" id="charts"></div>
 
@@ -95,7 +110,15 @@
 const HEX = {green:'#22c55e', red:'#ef4444', orange:'#f97316', yellow:'#eab308'};
 const MAX = 360;
 let upBase = 0;
+let ws = null;
 const zoneId = () => document.getElementById('zone-select').value;
+const liveMetricDefs = [
+  ['occupancy_count','Occupancy','people',0], ['co2_ppm','CO₂','ppm',1],
+  ['humidity_percent','Humidity','%',1], ['temp_indoor_c','Indoor temp','°C',1],
+  ['temp_outdoor_c','Outdoor temp','°C',1], ['hvac_kw','HVAC','kW',2],
+  ['lighting_kw','Lighting','kW',2], ['plug_load_kw','Plug load','kW',2],
+];
+const alertedZones = new Map();
 
 const chartDefs = [
   {key:'hvac_kw',      title:'HVAC Consumption (kW)',   color:'#60a5fa'},
@@ -112,22 +135,53 @@ function makeChart(key, title, color){
   const ctx = panel.querySelector('canvas');
   return new Chart(ctx, {
     type:'line',
-    data:{labels:[], datasets:[{
-      label:title, data:[], borderColor:color, backgroundColor:'transparent',
-      borderWidth:1.6, tension:.25, pointRadius:3, pointHoverRadius:5,
-      pointBackgroundColor:[], pointBorderColor:[]
-    }]},
+    data:{labels:[], datasets:[
+      {label:'Live value', data:[], borderColor:color, backgroundColor:'transparent',
+       borderWidth:1.5, tension:.25, pointRadius:2, pointHoverRadius:4,
+       pointBackgroundColor:[], pointBorderColor:[]},
+      {label:'10-sample mean', data:[], borderColor:'#f8fafc', backgroundColor:'transparent',
+       borderWidth:2, tension:.25, pointRadius:0, pointHoverRadius:3}
+    ]},
     options:{
       responsive:true, maintainAspectRatio:false,
       animation:{duration:0},
       scales:{x:{ticks:{maxTicksLimit:8,color:'#64748b',font:{size:10}},grid:{display:false}},
               y:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'#1e293b'}}},
-      plugins:{legend:{display:false}}
+      plugins:{legend:{display:true,labels:{color:'#94a3b8',boxWidth:12,font:{size:10}}}}
     }
   });
 }
 
 chartDefs.forEach(c => charts[c.key] = makeChart(c.key, c.title, c.color));
+document.getElementById('live-metrics').innerHTML = liveMetricDefs.map(([key,label,unit]) =>
+  `<div class="live-metric"><div class="label">${label} · ${unit}</div><div class="value" id="metric-${key}">—</div></div>`
+).join('');
+
+function updateLiveMetrics(point){
+  if (point.zone_id !== zoneId()) return;
+  const telemetry = point.telemetry || {};
+  liveMetricDefs.forEach(([key,,unit,digits]) => {
+    const node = document.getElementById(`metric-${key}`);
+    const value = telemetry[key];
+    if (node) node.textContent = Number.isFinite(value) ? `${Number(value).toFixed(digits)} ${unit}` : '—';
+  });
+  document.getElementById('live-updated').textContent = `Updated ${new Date(point.timestamp).toLocaleTimeString()}`;
+}
+
+function showAnomalyAlert(zone, diagnosis, explanation=''){
+  const previous = alertedZones.get(zone);
+  if (previous?.diagnosis !== diagnosis) alertedZones.set(zone, {diagnosis, explanation});
+  renderAnomalyAlerts();
+}
+
+function renderAnomalyAlerts(){
+  const messages = [...alertedZones.entries()].map(([zone, alert]) =>
+    `${zone}${zone !== zoneId() ? ' (not selected)' : ''} · ${alert.diagnosis}${alert.explanation ? ' · '+alert.explanation : ''}`
+  );
+  const banner = document.getElementById('anomaly-alert');
+  document.getElementById('anomaly-alert-text').textContent = messages.join('  |  ');
+  banner.classList.toggle('visible', messages.length > 0);
+}
 
 function pushPoint(p){
   const m = p.marker || 'green';
@@ -136,13 +190,19 @@ function pushPoint(p){
   ['hvac_kw','lighting_kw','plug_load_kw'].forEach(k => {
     const ch = charts[k];
     ch.data.labels.push(label);
-    ch.data.datasets[0].data.push(t[k] ?? 0);
+    const live = ch.data.datasets[0];
+    const mean = ch.data.datasets[1];
+    const value = t[k] ?? 0;
+    live.data.push(value);
+    const recent = live.data.slice(-10);
+    mean.data.push(recent.reduce((sum, sample) => sum + sample, 0) / recent.length);
     const col = HEX[m] || HEX.green;
-    ch.data.datasets[0].pointBackgroundColor.push(col);
-    ch.data.datasets[0].pointBorderColor.push(col);
+    live.pointBackgroundColor.push(col);
+    live.pointBorderColor.push(col);
     if (ch.data.labels.length > MAX){
-      ch.data.labels.shift(); ch.data.datasets[0].data.shift();
-      ch.data.datasets[0].pointBackgroundColor.shift(); ch.data.datasets[0].pointBorderColor.shift();
+      ch.data.labels.shift();
+      ch.data.datasets.forEach(dataset => dataset.data.shift());
+      live.pointBackgroundColor.shift(); live.pointBorderColor.shift();
     }
   });
   Object.values(charts).forEach(c => c.update('none'));
@@ -218,34 +278,58 @@ async function refresh(initial=false){
 
 function loadZones(zones){
   const sel = document.getElementById('zone-select');
+  const previous = sel.value;
   sel.innerHTML = '';
   zones.forEach(z => {
     const o = document.createElement('option');
     o.value = z; o.textContent = z; sel.appendChild(o);
   });
+  if (zones.includes(previous)) sel.value = previous;
 }
 
 function connect(){
-  const ws = new WebSocket(`ws://${location.host}/ws/telemetry` +
-    (zoneId() ? '?zone='+encodeURIComponent(zoneId()) : ''));
+  if (ws){ ws.onclose = null; ws.close(); }
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const selected = zoneId();
+  ws = new WebSocket(`${protocol}//${location.host}/ws/telemetry?zone=${encodeURIComponent(selected)}&watch_all=true`);
+  const currentSocket = ws;
   ws.onmessage = ev => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'hello'){
       loadZones(msg.zones);
       refresh(true);
     } else if (msg.type === 'history'){
-      (msg.points||[]).forEach(pushPoint);
+      (msg.points||[]).filter(p => p.zone_id === zoneId()).forEach(p => { updateLiveMetrics(p); pushPoint(p); });
       refresh(true);
-    } else if (msg.type === 'point') pushPoint(msg.point);
-    else if (msg.type === 'anomaly') pushAnomaly(msg.anomaly);
+    } else if (msg.type === 'point' && msg.point.zone_id === zoneId()) {
+      updateLiveMetrics(msg.point); pushPoint(msg.point);
+    } else if (msg.type === 'verdict' && msg.verdict.is_anomaly) {
+      showAnomalyAlert(msg.verdict.zone_id, msg.verdict.diagnosis || 'Energy anomaly', msg.verdict.explanation);
+    } else if (msg.type === 'verdict') {
+      alertedZones.delete(msg.verdict.zone_id);
+      renderAnomalyAlerts();
+    } else if (msg.type === 'anomaly') pushAnomaly(msg.anomaly);
   };
-  ws.onclose = () => setTimeout(connect, 1500);
+  ws.onclose = () => { if (ws === currentSocket) setTimeout(connect, 1500); };
 }
 connect();
 
 document.getElementById('zone-select').addEventListener('change', () => {
-  // Reconnect filters history + stream to the new zone.
+  Object.values(charts).forEach(chart => {
+    chart.data.labels = [];
+    chart.data.datasets.forEach(dataset => { dataset.data = []; });
+    chart.data.datasets[0].pointBackgroundColor = [];
+    chart.data.datasets[0].pointBorderColor = [];
+    chart.update('none');
+  });
+  liveMetricDefs.forEach(([key]) => { document.getElementById(`metric-${key}`).textContent = '—'; });
+  document.getElementById('live-updated').textContent = 'Waiting for selected zone data…';
+  renderAnomalyAlerts();
   connect();
+});
+
+document.getElementById('dismiss-alert').addEventListener('click', () => {
+  document.getElementById('anomaly-alert').classList.remove('visible');
 });
 
 document.getElementById('btn-report').addEventListener('click', async () => {

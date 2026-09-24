@@ -129,12 +129,14 @@ def create_app(settings: Settings, lifespan) -> FastAPI:
     # ---------------------------------------------------------------- WebSockets
     @app.websocket("/ws/telemetry")
     async def ws_telemetry(
-        websocket: WebSocket, zone: Optional[str] = Query(None)
+        websocket: WebSocket,
+        zone: Optional[str] = Query(None),
+        watch_all: bool = Query(False),
     ) -> None:
         """Live stream: replay history, then push points/verdicts/anomalies.
 
-        ``zone`` filters point/verdict frames to one zone; control and report
-        events are always forwarded.
+        ``zone`` filters point/verdict frames to one zone unless ``watch_all``
+        is enabled; dashboards can chart one zone and alert on others.
         """
         rt: AuditorRuntime = websocket.app.state.runtime
         await websocket.accept()
@@ -159,7 +161,7 @@ def create_app(settings: Settings, lifespan) -> FastAPI:
             while True:
                 message = await queue.get()
                 mtype = message.get("type")
-                if mtype in ("point", "verdict") and zone is not None:
+                if mtype in ("point", "verdict") and zone is not None and not watch_all:
                     subject = (message.get("point") or message.get("verdict") or {}).get("zone_id")
                     if subject != zone:
                         continue

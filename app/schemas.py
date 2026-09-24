@@ -58,6 +58,9 @@ class SimulatorCommand(BaseModel):
     action: str = Field(description="inject | clear | reset")
     zone: str = "floor_2_east"
     anomaly: Optional[AnomalyKind] = None
+    occupancy: Optional[int] = Field(default=None, ge=0)
+    metric: Optional[str] = None
+    value: Optional[float] = None
 
 
 class InjectionState(BaseModel):
@@ -66,6 +69,8 @@ class InjectionState(BaseModel):
     zone: str
     active: List[str] = Field(default_factory=list)
     injected_state: str = "normal"
+    occupancy_override: Optional[int] = None
+    sensor_overrides: Dict[str, float] = Field(default_factory=dict)
 
 
 class Verdict(BaseModel):
