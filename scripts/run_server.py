@@ -17,6 +17,7 @@ from app.config import settings  # noqa: E402
 
 
 def main() -> None:
+    print(f"Open in your browser: http://127.0.0.1:{settings.port}/")
     uvicorn.run(
         "app.main:app",
         host=settings.host,
