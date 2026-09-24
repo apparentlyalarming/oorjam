@@ -70,7 +70,7 @@ def test_demand_ventilation_overcooling(zone):
 def test_baseline_drift(zone):
     v = _classify(
         zone,
-        _fv(zone, plug_fast=9.0),   # 1.5x the expected 6.0 kW baseline
+        _fv(zone, plug_fast=9.0, hour_fraction=2.0),   # 1.5x the expected 6.0 kW baseline off-hours
         {"hvac": 30.0, "lighting": 5.0, "plug": 6.0},
     )
     assert v.diagnosis == "OFF_HOURS_BASELINE_DRIFT"

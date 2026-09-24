@@ -215,7 +215,9 @@ class FeatureEngine:
         self._prev_ts = self._parse_ts(point.timestamp)
 
         last = window[-1]
-        hour = float(last.timestamp[11:13] or 0) + float(last.timestamp[14:16] or 0) / 60.0
+        hour = last.simulated_hour_fraction
+        if hour is None:
+            hour = float(last.timestamp[11:13] or 0) + float(last.timestamp[14:16] or 0) / 60.0
 
         # Fast sub-window (the most recent `fast_window_points` samples) for
         # real-time diagnostic rules - means of the last k samples.

@@ -30,6 +30,7 @@
   .occupancy-row input{width:100px;background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px}
   .occupancy-row button{padding:9px 12px}
   .occupancy-note{font-size:11px;color:var(--muted);margin-top:7px}
+  .live-summary{margin:0 0 12px;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums}
   details.sensor-controls{margin:4px 0 14px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#172235}
   details.sensor-controls summary{cursor:pointer;color:var(--text);font-size:12px;font-weight:600}
   .sensor-list{display:grid;gap:7px;margin-top:10px}
@@ -46,10 +47,20 @@
   button.ghost:hover{border-color:var(--red);color:var(--red)}
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:16px}
   .panel h3{margin:0 0 8px;font-size:13px;color:var(--muted)}
+  .clock-control{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 16px;padding:12px 14px;background:var(--panel);border:1px solid var(--line);border-radius:11px}
+  .clock-control input{flex:1;min-width:180px;accent-color:var(--orange)}
+  .clock-control button{padding:8px 12px}
+  .clock-label{font-variant-numeric:tabular-nums;min-width:54px;font-weight:650}
   .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;max-height:260px;overflow:auto;line-height:1.6}
   .log div{white-space:pre-wrap}
   .glowred{box-shadow:0 0 18px rgba(239,68,68,.35)}
+  html.embedded main{padding:12px;max-width:none}
+  html.embedded .grid{grid-template-columns:minmax(0,1fr);gap:10px}
+  html.embedded .zone-card{padding:12px}
+  html.embedded .panel{display:none}
+  @media(max-width:560px){html.embedded .faults{grid-template-columns:1fr}html.embedded header{padding:10px 12px}html.embedded header h1{font-size:14px}}
 </style>
+<script>if(new URLSearchParams(location.search).has('embed'))document.documentElement.classList.add('embedded');</script>
 </head>
 <body>
 <header>
@@ -58,6 +69,13 @@
   <span class="badge" id="conn">connecting…</span>
 </header>
 <main>
+  <div class="clock-control">
+    <b>Simulation time</b>
+    <input id="time-slider" type="range" min="0" max="1439" step="15" value="540">
+    <span class="clock-label" id="time-label">09:00</span>
+    <button id="apply-time">Apply time</button>
+    <button class="ghost" id="resume-time">Use current time</button>
+  </div>
   <div class="grid" id="zones"></div>
   <div class="panel">
     <h3>Pipeline log</h3>
@@ -116,6 +134,7 @@ function buildZones(zones, kinds){
         </div>
         <div class="occupancy-note" id="occupancy-note-${zone}">Normal simulated occupancy · power follows its normal daily pattern</div>
       </div>
+      <div class="live-summary" id="live-${zone}">Waiting for telemetry…</div>
       <details class="sensor-controls">
         <summary>Override other telemetry values</summary>
         <div class="sensor-list" id="sensors-${zone}"></div>
@@ -200,6 +219,12 @@ function renderState(state){
       : `Occupancy fixed at ${state.occupancy_override} · power is unchanged by this control`;
   }
   if (occupancyInput) occupancyInput.value = state.occupancy_override ?? 0;
+  if (state.time_of_day_override_minutes !== null && state.time_of_day_override_minutes !== undefined) {
+    timeSlider.value = state.time_of_day_override_minutes;
+    document.getElementById('time-label').textContent = formatTime(state.time_of_day_override_minutes);
+  } else if (state.zone === 'floor_1_west') {
+    document.getElementById('time-label').textContent = 'System time';
+  }
   SENSOR_METRICS.forEach(metric => {
     const input = document.getElementById(`${metric.key}-${state.zone}`);
     if (input && state.sensor_overrides && state.sensor_overrides[metric.key] !== undefined) {
@@ -241,6 +266,19 @@ function appLog(line){
   while (box.children.length > 60) box.lastChild.remove();
 }
 
+function formatTime(minutes){
+  return `${String(Math.floor(minutes/60)).padStart(2,'0')}:${String(minutes%60).padStart(2,'0')}`;
+}
+
+const timeSlider = document.getElementById('time-slider');
+timeSlider.addEventListener('input', () => {
+  document.getElementById('time-label').textContent = formatTime(Number(timeSlider.value));
+});
+document.getElementById('apply-time').addEventListener('click', () => {
+  send({action:'set_time_of_day', zone:'floor_1_west', time_minutes:Number(timeSlider.value)});
+});
+document.getElementById('resume-time').addEventListener('click', () => send({action:'resume_time_of_day', zone:'floor_1_west'}));
+
 function send(cmd){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(cmd)); }
 
 function connect(){
@@ -255,8 +293,14 @@ function connect(){
     } else if (msg.type === 'state') renderState(msg.state);
     else if (msg.type === 'injection') renderState(msg.state);
     else if (msg.type === 'verdict') onVerdict(msg.verdict);
+    else if (msg.type === 'point') {
+      const t = msg.point.telemetry;
+      const live = document.getElementById('live-'+msg.point.zone_id);
+      if (live) live.textContent = `Live · ${t.occupancy_count} people · CO₂ ${Math.round(t.co2_ppm)} ppm · HVAC ${t.hvac_kw.toFixed(1)} kW · Lights ${t.lighting_kw.toFixed(1)} kW · Plug ${t.plug_load_kw.toFixed(1)} kW`;
+    }
     else if (msg.type === 'log') setLog(msg.lines);
     else if (msg.type === 'anomaly') appLog(`CLOSED ${msg.anomaly.diagnosis} · ${msg.anomaly.zone_id} · ${msg.anomaly.energy_wasted_kwh.toFixed(2)} kWh · $${msg.anomaly.financial_waste_usd.toFixed(2)}`);
+    else if (msg.type === 'actuation') appLog(`AUTO ACTION ${msg.actuation.message}`);
   };
   ws.onclose = () => { document.getElementById('conn').textContent = 'reconnecting…'; setTimeout(connect, 1200); };
 }

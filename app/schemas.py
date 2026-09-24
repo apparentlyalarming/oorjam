@@ -50,17 +50,48 @@ class TelemetryPoint(BaseModel):
     marker: str = "green"
     score: float = 0.0
     diagnosis: Optional[str] = None
+    simulated_hour_fraction: Optional[float] = None
 
 
 class SimulatorCommand(BaseModel):
     """Client -> server message from the injection control panel."""
 
-    action: str = Field(description="inject | clear | reset")
+    action: str = Field(description="inject | clear | reset | set_sensor | set_time_of_day | ...")
     zone: str = "floor_2_east"
     anomaly: Optional[AnomalyKind] = None
     occupancy: Optional[int] = Field(default=None, ge=0)
     metric: Optional[str] = None
     value: Optional[float] = None
+    time_minutes: Optional[int] = Field(default=None, ge=0, le=1439)
+
+
+class ZoneCreate(BaseModel):
+    building_id: str = Field(min_length=1, max_length=80)
+    floor_id: str = Field(min_length=1, max_length=80)
+    zone_id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    area_m2: float = Field(gt=0, le=100000)
+    ceiling_height_m: float = Field(gt=0, le=100)
+    occupancy_max: int = Field(gt=0, le=100000)
+    zone_type: str = Field(default="Office", min_length=1, max_length=80)
+    operating_start: str = Field(default="08:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    operating_end: str = Field(default="18:00", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    utility_rate_usd_per_kwh: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class ZoneUpdate(BaseModel):
+    building_id: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    floor_id: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    area_m2: Optional[float] = Field(default=None, gt=0, le=100000)
+    ceiling_height_m: Optional[float] = Field(default=None, gt=0, le=100)
+    occupancy_max: Optional[int] = Field(default=None, gt=0, le=100000)
+    zone_type: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    operating_start: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    operating_end: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    utility_rate_usd_per_kwh: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class UtilityRateUpdate(BaseModel):
+    utility_rate_usd_per_kwh: float = Field(ge=0, le=100)
 
 
 class InjectionState(BaseModel):
@@ -71,6 +102,8 @@ class InjectionState(BaseModel):
     injected_state: str = "normal"
     occupancy_override: Optional[int] = None
     sensor_overrides: Dict[str, float] = Field(default_factory=dict)
+    time_of_day_override_minutes: Optional[int] = None
+    actuations: Dict[str, float] = Field(default_factory=dict)
 
 
 class Verdict(BaseModel):

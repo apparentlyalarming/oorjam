@@ -56,6 +56,7 @@ class AnalyticsEngine:
     ) -> None:
         self.settings = settings
         self.rate = rate
+        self.zone_rates: Dict[str, float] = {}
         self.catalog = list(catalog or _DEFAULT_CATALOG(rate))
 
     # ---------------------------------------------------------------- reporting
@@ -99,7 +100,11 @@ class AnalyticsEngine:
                 continue
             factor = float(len(zones))
             annual_kwh = round(rec.annual_energy_savings_kwh * factor, 2)
-            annual_saving_usd = annual_kwh * self.rate
+            effective_rate = (
+                sum(self.zone_rates.get(zone, self.rate) for zone in zones) / len(zones)
+                if zones else self.rate
+            )
+            annual_saving_usd = annual_kwh * effective_rate
             maintenance = round(rec.maintenance_usd_per_year * factor, 2)
             net = annual_saving_usd - maintenance
             payback_years = rec.capital_cost_usd / max(1e-6, net)
@@ -116,7 +121,7 @@ class AnalyticsEngine:
                     maintenance_usd_per_year=maintenance,
                     annual_energy_savings_kwh=annual_kwh,
                     lifetime_years=rec.lifetime_years,
-                    rate_usd_per_kwh=self.rate,
+                    rate_usd_per_kwh=effective_rate,
                     payback_months=round(payback_years * 12.0, 2),
                     annual_roi_pct=round(roi, 2),
                     annual_net_savings_usd=round(net, 2),

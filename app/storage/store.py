@@ -52,6 +52,18 @@ class TelemetryStore:
     async def recent_anomalies(self, limit: int = 200) -> List[AnomalyRecord]:
         raise NotImplementedError
 
+    async def load_zone_configs(self) -> List[Dict[str, Any]]:
+        return []
+
+    async def save_zone_config(self, config: Dict[str, Any]) -> None:
+        return None
+
+    async def load_app_config(self) -> Dict[str, Any]:
+        return {}
+
+    async def save_app_config(self, key: str, value: Any) -> None:
+        return None
+
     async def snapshot(self) -> Dict[str, Any]:
         return {
             "kind": self.kind,
@@ -74,6 +86,8 @@ class MemoryStore(TelemetryStore):
             maxlen=settings.max_anomaly_history
         )
         self._ready = True
+        self._zone_configs: Dict[str, Dict[str, Any]] = {}
+        self._app_configs: Dict[str, Any] = {}
 
     async def is_ready(self) -> bool:
         return self._ready
@@ -96,6 +110,18 @@ class MemoryStore(TelemetryStore):
 
     async def recent_anomalies(self, limit: int = 200) -> List[AnomalyRecord]:
         return list(self._anomalies)[-limit:]
+
+    async def load_zone_configs(self) -> List[Dict[str, Any]]:
+        return list(self._zone_configs.values())
+
+    async def save_zone_config(self, config: Dict[str, Any]) -> None:
+        self._zone_configs[config["zone_id"]] = dict(config)
+
+    async def load_app_config(self) -> Dict[str, Any]:
+        return dict(self._app_configs)
+
+    async def save_app_config(self, key: str, value: Any) -> None:
+        self._app_configs[key] = value
 
     async def snapshot(self) -> Dict[str, Any]:
         base = await super().snapshot()
@@ -156,6 +182,33 @@ class PostgresStore(TelemetryStore):
                 CREATE INDEX IF NOT EXISTS idx_anomalies_end ON anomalies (end_ts DESC);
                 """
             )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS buildings (
+                    building_id TEXT PRIMARY KEY, label TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS floors (
+                    building_id TEXT NOT NULL REFERENCES buildings(building_id) ON DELETE CASCADE,
+                    floor_id TEXT NOT NULL, label TEXT NOT NULL,
+                    PRIMARY KEY(building_id, floor_id)
+                );
+                CREATE TABLE IF NOT EXISTS zone_configs (
+                    zone_id TEXT PRIMARY KEY, building_id TEXT NOT NULL,
+                    floor_id TEXT NOT NULL, area_m2 DOUBLE PRECISION NOT NULL,
+                    ceiling_height_m DOUBLE PRECISION NOT NULL, volume_m3 DOUBLE PRECISION NOT NULL,
+                    config JSONB NOT NULL,
+                    FOREIGN KEY(building_id, floor_id) REFERENCES floors(building_id, floor_id)
+                );
+                CREATE TABLE IF NOT EXISTS auditor_config (
+                    config_key TEXT PRIMARY KEY, config_value JSONB NOT NULL
+                );
+                """
+            )
+            await conn.execute(
+                "ALTER TABLE zone_configs ADD COLUMN IF NOT EXISTS area_m2 DOUBLE PRECISION NOT NULL DEFAULT 100; "
+                "ALTER TABLE zone_configs ADD COLUMN IF NOT EXISTS ceiling_height_m DOUBLE PRECISION NOT NULL DEFAULT 3; "
+                "ALTER TABLE zone_configs ADD COLUMN IF NOT EXISTS volume_m3 DOUBLE PRECISION NOT NULL DEFAULT 300"
+            )
         self._ready = True
 
     async def is_ready(self) -> bool:
@@ -200,6 +253,41 @@ class PostgresStore(TelemetryStore):
             record.financial_waste_usd,
             record.iforest_score,
             json.dumps(record.model_dump(exclude={"zone_id", "start_timestamp", "end_timestamp"})),
+        )
+
+    async def load_zone_configs(self) -> List[Dict[str, Any]]:
+        rows = await self._pool.fetch("SELECT config FROM zone_configs ORDER BY zone_id")
+        return [dict(row["config"]) for row in rows]
+
+    async def save_zone_config(self, config: Dict[str, Any]) -> None:
+        await self._pool.execute(
+            "INSERT INTO buildings(building_id,label) VALUES($1,$1) ON CONFLICT DO NOTHING",
+            config["building_id"],
+        )
+        await self._pool.execute(
+            "INSERT INTO floors(building_id,floor_id,label) VALUES($1,$2,$2) "
+            "ON CONFLICT(building_id,floor_id) DO NOTHING",
+            config["building_id"], config["floor_id"],
+        )
+        await self._pool.execute(
+            "INSERT INTO zone_configs(zone_id,building_id,floor_id,area_m2,ceiling_height_m,volume_m3,config) "
+            "VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) ON CONFLICT(zone_id) DO UPDATE SET "
+            "building_id=EXCLUDED.building_id,floor_id=EXCLUDED.floor_id,area_m2=EXCLUDED.area_m2,"
+            "ceiling_height_m=EXCLUDED.ceiling_height_m,volume_m3=EXCLUDED.volume_m3,config=EXCLUDED.config",
+            config["zone_id"], config["building_id"], config["floor_id"],
+            config["area_m2"], config["ceiling_height_m"],
+            config["area_m2"] * config["ceiling_height_m"], json.dumps(config),
+        )
+
+    async def load_app_config(self) -> Dict[str, Any]:
+        rows = await self._pool.fetch("SELECT config_key,config_value FROM auditor_config")
+        return {row["config_key"]: row["config_value"] for row in rows}
+
+    async def save_app_config(self, key: str, value: Any) -> None:
+        await self._pool.execute(
+            "INSERT INTO auditor_config(config_key,config_value) VALUES($1,$2::jsonb) "
+            "ON CONFLICT(config_key) DO UPDATE SET config_value=EXCLUDED.config_value",
+            key, json.dumps(value),
         )
 
     async def recent_telemetry(
@@ -299,15 +387,16 @@ class SupabaseHttpStore(TelemetryStore):
         import httpx
 
         self._client = httpx.AsyncClient(timeout=10.0)
-        resp = await self._client.get(
-            f"{self.base_url}/rest/v1/telemetry",
-            params={"select": "id", "limit": "1"},
-            headers=self._headers(),
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(
-                f"Supabase PostgREST returned {resp.status_code}: {resp.text[:200]}"
+        for table in ("telemetry", "anomalies", "zone_configs", "auditor_config"):
+            resp = await self._client.get(
+                f"{self.base_url}/rest/v1/{table}",
+                params={"select": "*", "limit": "1"},
+                headers=self._headers(),
             )
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"Supabase table {table} is unavailable: {resp.text[:200]}"
+                )
         self._ready = True
 
     async def is_ready(self) -> bool:
@@ -359,6 +448,64 @@ class SupabaseHttpStore(TelemetryStore):
             json=row,
             headers=self._headers(),
         )
+
+    async def load_zone_configs(self) -> List[Dict[str, Any]]:
+        if not self._ready or self._client is None:
+            return []
+        response = await self._client.get(
+            f"{self.base_url}/rest/v1/zone_configs",
+            params={"select": "config", "order": "zone_id.asc"},
+            headers=self._headers(),
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"could not load zone_configs: {response.text[:200]}")
+        return [row["config"] for row in response.json()]
+
+    async def save_zone_config(self, config: Dict[str, Any]) -> None:
+        if not self._ready or self._client is None:
+            return
+        for table, row in (
+            ("buildings", {"building_id": config["building_id"], "label": config["building_id"]}),
+            ("floors", {"building_id": config["building_id"], "floor_id": config["floor_id"], "label": config["floor_id"]}),
+            ("zone_configs", {"zone_id": config["zone_id"], "building_id": config["building_id"], "floor_id": config["floor_id"], "area_m2": config["area_m2"], "ceiling_height_m": config["ceiling_height_m"], "volume_m3": config["area_m2"] * config["ceiling_height_m"], "config": config}),
+        ):
+            conflict_key = {
+                "buildings": "building_id",
+                "floors": "building_id,floor_id",
+                "zone_configs": "zone_id",
+            }[table]
+            response = await self._client.post(
+                f"{self.base_url}/rest/v1/{table}",
+                params={"on_conflict": conflict_key},
+                json=row,
+                headers={**self._headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+            )
+            if response.status_code >= 400:
+                raise RuntimeError(f"could not save {table}: {response.text[:200]}")
+
+    async def load_app_config(self) -> Dict[str, Any]:
+        if not self._ready or self._client is None:
+            return {}
+        response = await self._client.get(
+            f"{self.base_url}/rest/v1/auditor_config",
+            params={"select": "config_key,config_value"},
+            headers=self._headers(),
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"could not load auditor_config: {response.text[:200]}")
+        return {row["config_key"]: row["config_value"] for row in response.json()}
+
+    async def save_app_config(self, key: str, value: Any) -> None:
+        if not self._ready or self._client is None:
+            return
+        response = await self._client.post(
+            f"{self.base_url}/rest/v1/auditor_config",
+            params={"on_conflict": "config_key"},
+            json={"config_key": key, "config_value": value},
+            headers={**self._headers(), "Prefer": "resolution=merge-duplicates,return=minimal"},
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"could not save auditor_config: {response.text[:200]}")
 
     async def recent_telemetry(
         self, zone_id: Optional[str] = None, limit: int = 500

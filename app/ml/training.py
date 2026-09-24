@@ -18,6 +18,8 @@ The pipeline is fully re-runnable via ``python scripts/train_model.py``.  It:
 from __future__ import annotations
 
 import math
+import os
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -34,6 +36,7 @@ from ..zones import ZoneDef, ZONE_CATALOG
 
 ARTIFACT_FILENAME = "detector.joblib"
 BASELINE_FILENAME = "baseline_models.joblib"
+PIPELINE_VERSION = 3
 
 
 def _baseline_inputs(
@@ -50,9 +53,12 @@ def _baseline_inputs(
     occ = np.empty(n)
     delta_t = np.empty(n)
     for i, p in enumerate(points):
-        hh = float(p.timestamp[11:13] or 0)
-        mm = float(p.timestamp[14:16] or 0)
-        hour[i] = hh + mm / 60.0
+        if p.simulated_hour_fraction is not None:
+            hour[i] = p.simulated_hour_fraction
+        else:
+            hh = float(p.timestamp[11:13] or 0)
+            mm = float(p.timestamp[14:16] or 0)
+            hour[i] = hh + mm / 60.0
         occ[i] = p.telemetry.occupancy_count
         delta_t[i] = max(0.0, p.telemetry.temp_outdoor_c - p.telemetry.temp_indoor_c)
 
@@ -113,7 +119,7 @@ def _zone_baseline_series(
         zone=zone,
         controller=controller,
         sink=_collect,
-        interval=1.0,
+        interval=resolution_sec,
         seed=seed,
     )
 
@@ -131,6 +137,7 @@ def _zone_baseline_series(
         hour_fraction = clock.hour + clock.minute / 60.0 + clock.second / 3600.0
         point = generator._normal_sample(clock, hour_fraction)
         point.timestamp = clock.isoformat().replace("+00:00", "Z")
+        point.simulated_hour_fraction = hour_fraction
         points.append(point)
     return points
 
@@ -153,20 +160,62 @@ def train_artifacts(
     resolution_sec: float = 10.0,
 ) -> None:
     """Fit and persist all model artifacts into ``settings.model_dir``."""
-    settings.model_dir.mkdir(parents=True, exist_ok=True)
+    series: Dict[str, List[TelemetryPoint]] = {}
+    for idx, zone in enumerate(ZONE_CATALOG):
+        print(f"[train] synthesising {days}d baseline for {zone.zone_id} @ {resolution_sec}s ...")
+        series[zone.zone_id] = _zone_baseline_series(
+            zone, days, resolution_sec, seed=settings.random_state + idx
+        )
+    _fit_and_save(series, settings, max(2, int(settings.window_seconds / resolution_sec)))
 
-    window_points = max(2, int(settings.window_seconds / resolution_sec))
+
+def train_from_points(
+    points: Sequence[TelemetryPoint], settings: Settings = default_settings
+) -> Dict[str, int]:
+    """Fit the detector and load regressors from uploaded historical telemetry."""
+    known = {zone.zone_id: zone for zone in ZONE_CATALOG}
+    series: Dict[str, List[TelemetryPoint]] = {}
+    for point in points:
+        if point.zone_id not in known:
+            raise ValueError(f"unknown zone_id in CSV: {point.zone_id}")
+        series.setdefault(point.zone_id, []).append(point)
+    for rows in series.values():
+        rows.sort(key=lambda point: point.timestamp)
+    if not series:
+        raise ValueError("CSV contains no telemetry rows")
+    required = max(settings.window_min_samples + 1, 30)
+    short = [zone for zone, rows in series.items() if len(rows) < required]
+    if short:
+        raise ValueError(f"at least {required} rows are required per zone: {', '.join(short)}")
+    uploaded_counts = {zone: len(rows) for zone, rows in series.items()}
+    for idx, zone in enumerate(ZONE_CATALOG):
+        if zone.zone_id not in series:
+            series[zone.zone_id] = _zone_baseline_series(
+                zone, days=2, resolution_sec=600.0, seed=settings.random_state + idx
+            )
+    _fit_and_save(series, settings, settings.window_points)
+    return uploaded_counts
+
+
+def _fit_and_save(
+    series: Dict[str, List[TelemetryPoint]], settings: Settings, window_points: int
+) -> None:
+    """Fit shared inference artifacts, then atomically replace both files."""
+    settings.model_dir.mkdir(parents=True, exist_ok=True)
     feature_names: Optional[List[str]] = None
     all_X: List[np.ndarray] = []
     baseline_models: Dict[str, Dict[str, RandomForestRegressor]] = {}
 
-    for idx, zone in enumerate(ZONE_CATALOG):
-        print(f"[train] synthesising {days}d baseline for {zone.zone_id} @ {resolution_sec}s ...")
-        points = _zone_baseline_series(zone, days, resolution_sec, seed=settings.random_state + idx)
-        X, feature_names = _extract_runtime_features(points, window_points, settings.window_min_samples)
+    zone_map = {zone.zone_id: zone for zone in ZONE_CATALOG}
+    for idx, (zone_id, points) in enumerate(sorted(series.items())):
+        zone = zone_map[zone_id]
+        X, feature_names = _extract_runtime_features(
+            points, window_points, settings.window_min_samples
+        )
+        if len(X) == 0:
+            raise ValueError(f"not enough usable feature windows for {zone_id}")
         all_X.append(X)
         baseline_models[zone.zone_id] = _fit_baseline_models(zone, points, settings.random_state + idx)
-        print(f"[train]     {len(points)} samples -> {len(X)} feature vectors")
 
     X_full = np.vstack(all_X)
     scaler = StandardScaler().fit(X_full)
@@ -185,6 +234,7 @@ def train_artifacts(
     threshold = float(np.quantile(train_scores, settings.contamination))
 
     detector_payload = {
+        "pipeline_version": PIPELINE_VERSION,
         "forest": forest,
         "scaler": scaler,
         "threshold": threshold,
@@ -193,18 +243,29 @@ def train_artifacts(
         "n_samples": int(len(X_full)),
         "contamination": settings.contamination,
     }
-    joblib.dump(detector_payload, settings.model_dir / ARTIFACT_FILENAME)
-    joblib.dump(
-        {"zones": baseline_models, "rate": settings.utility_rate_usd_per_kwh},
-        settings.model_dir / BASELINE_FILENAME,
-    )
+    with tempfile.TemporaryDirectory(dir=settings.model_dir) as temp_dir:
+        detector_tmp = Path(temp_dir) / ARTIFACT_FILENAME
+        baseline_tmp = Path(temp_dir) / BASELINE_FILENAME
+        joblib.dump(detector_payload, detector_tmp)
+        joblib.dump(
+            {"zones": baseline_models, "rate": settings.utility_rate_usd_per_kwh},
+            baseline_tmp,
+        )
+        os.replace(detector_tmp, settings.model_dir / ARTIFACT_FILENAME)
+        os.replace(baseline_tmp, settings.model_dir / BASELINE_FILENAME)
     print(f"[train] artifacts written to {settings.model_dir}")
 
 
 def ensure_artifacts(settings: Settings = default_settings) -> None:
     """Train on the spot if the artifacts are missing (used at app startup)."""
-    if not (settings.model_dir / ARTIFACT_FILENAME).exists() or not (
-        settings.model_dir / BASELINE_FILENAME
-    ).exists():
+    detector_path = settings.model_dir / ARTIFACT_FILENAME
+    baseline_path = settings.model_dir / BASELINE_FILENAME
+    stale = False
+    if detector_path.exists():
+        try:
+            stale = joblib.load(detector_path).get("pipeline_version") != PIPELINE_VERSION
+        except Exception:
+            stale = True
+    if not detector_path.exists() or not baseline_path.exists() or stale:
         print("[startup] model artifacts missing - training baseline models ...")
         train_artifacts(settings, days=5, resolution_sec=10.0)

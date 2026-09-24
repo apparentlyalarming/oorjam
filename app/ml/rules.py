@@ -112,6 +112,7 @@ class DiagnosticClassifier:
         fv: WindowFeatures,
         expected: Dict[str, float],
         iforest_score: float,
+        anomaly_threshold: float = 0.0,
     ) -> Verdict:
         """Run the ordered ruleset.  Returns a verdict for the current window.
 
@@ -156,7 +157,11 @@ class DiagnosticClassifier:
             )
         # 4) Baseline drift - persistent parasitic plug load while mechanical
         #    duty stays steady (a stubborn elevated baseline, day or night).
-        elif plug_ratio >= DRIFT_PLUG_RATIO and hvac_ratio < MECHANICAL_STEADY_RATIO:
+        elif (
+            not zone.is_operating(fv.hour_fraction)
+            and plug_ratio >= DRIFT_PLUG_RATIO
+            and hvac_ratio < MECHANICAL_STEADY_RATIO
+        ):
             fired = (
                 "OFF_HOURS_BASELINE_DRIFT",
                 "subtle",
@@ -180,7 +185,7 @@ class DiagnosticClassifier:
             )
 
         # No rule fired: defer to the ML model alone.
-        if iforest_score < 0.0:  # below zero -> structurally unusual
+        if iforest_score < anomaly_threshold:
             return Verdict(
                 zone_id=zone.zone_id,
                 timestamp=fv.timestamp,

@@ -1,5 +1,6 @@
 # AI Energy-Waste Auditor - runtime dependencies
 fastapi>=0.110
+python-multipart>=0.0.9
 uvicorn[standard]>=0.29
 pydantic>=2.7
 pydantic-settings>=2.2

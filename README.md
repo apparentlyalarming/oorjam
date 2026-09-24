@@ -24,7 +24,14 @@ TelemetryGenerator ─▶ FeatureEngine ─▶ IsolationForest ─▶ Diagnostic
 
 - **Synthetic telemetry**: 3 zones (`floor_1_west`, `floor_2_east`,
   `floor_3_central`) emitting CO2 / humidity / indoor+outdoor temp / HVAC /
-  lighting / plug-load at 1 Hz, following diurnal + weekend occupancy rhythms.
+  lighting / plug-load at 1 Hz, following diurnal + weekend occupancy rhythms,
+  gradual occupancy movement, volume-scaled CO2 mixing, and HVAC compressor
+  duty cycles. The simulator clock and individual readings are controllable.
+- **Topology and manager settings**: create buildings, floors, and zones from
+  the dashboard; configure area, ceiling height, zone type, operating hours,
+  and utility rates. Volume is derived from area × ceiling height and affects
+  simulated CO2 behavior. Configuration uses Postgres/Supabase or memory
+  storage when no database is configured.
 - **Detection (Module 3)**: Isolation Forest scores a 20-minute sliding window
   (mean ‖ std feature vector); four deterministic rules resolve the root cause
   on a 10-second *fast* sub-window so a fault is flagged within seconds, not
@@ -36,7 +43,11 @@ TelemetryGenerator ─▶ FeatureEngine ─▶ IsolationForest ─▶ Diagnostic
   configurable utility rate; the report ranks retrofit measures by payback then
   ROI and closes the loop from diagnosis to recommendation.
 - **Injection simulator**: flip faults on/off per zone via the web UI or the
-  WebSocket control channel and watch the pipeline react.
+  bidirectional WebSocket control channel, adjust occupancy and sensor values,
+  and watch the pipeline react. Unoccupied-lighting waste sends a simulated
+  command to turn the zone lighting off on the next sample; both UIs log it.
+- **Custom training**: upload historical CSV telemetry from the dashboard to
+  retrain and hot-reload the Isolation Forest and expected-load models.
 - **Persistence**: `TelemetryStore` abstraction; comes with PostgREST
   (Supabase), asyncpg Postgres, and a bounded in-memory store.
 
@@ -149,11 +160,18 @@ All settings live in `app/config.py` and can be overridden with
 |---|---|---|
 | GET | `/api/health` | zones, detector + storage status |
 | GET | `/api/zones`, `/api/status`, `/api/injection` | live zone summaries |
+| GET/POST/PATCH | `/api/topology`, `/api/topology/zones` | browse and configure topology |
+| PUT | `/api/config/utility-rate` | set building utility rate |
+| POST | `/api/v1/train` | upload CSV and retrain local models |
 | GET | `/api/telemetry/current` | latest scored point per zone |
 | GET | `/api/anomalies` | closed anomaly records |
 | GET | `/api/analytics/current` | JSON audit report |
 | GET | `/api/report/markdown` | downloadable Markdown brief |
 | GET | `/api/storage` | store kind + row counts |
 | POST | `/api/inject` | inject / clear / reset a fault |
-| WS | `/ws/telemetry?zone=` | replayed history + live frames |
+| WS | `/ws/telemetry?zone=&watch_all=true` | selected-zone history + all-zone alerts |
 | WS | `/ws/simulator` | control channel + pipeline log |
+
+For Supabase, run or rerun `scripts/setup_supabase.sql` to create or upgrade
+the telemetry, anomaly, building, floor, zone configuration, and app
+configuration tables before starting the app.

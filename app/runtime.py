@@ -31,7 +31,7 @@ from .ml.rules import (
     BaselinePredictor,
     DiagnosticClassifier,
 )
-from .ml.training import BASELINE_FILENAME
+from .ml.training import BASELINE_FILENAME, _fit_baseline_models, _zone_baseline_series
 from .schemas import (
     AnalyticsReport,
     AnomalyRecord,
@@ -41,7 +41,7 @@ from .schemas import (
 )
 from .storage.store import TelemetryStore, create_store
 from .telemetry.generator import InjectionController, TelemetryGenerator
-from .zones import ZONE_BY_ID, ZONE_CATALOG, ZoneDef
+from .zones import ZONE_BY_ID, ZONE_CATALOG, ZoneDef, register_zone
 
 
 @dataclass
@@ -81,7 +81,9 @@ class AuditorRuntime:
         self.settings = settings
         self.controller = InjectionController()
         self.analytics = AnalyticsEngine(settings, rate=settings.utility_rate_usd_per_kwh)
+        self.analytics.zone_rates = {}
         self.log = Logger()
+        self.zones: Dict[str, ZoneDef] = dict(ZONE_BY_ID)
 
         # Wiring filled in by ``create``.
         self.store: Optional[TelemetryStore] = None
@@ -99,26 +101,50 @@ class AuditorRuntime:
 
         # WebSocket fan-out.
         self._queues: List[asyncio.Queue] = []
+        self._zone_tasks: Dict[str, asyncio.Task] = {}
+        self._running = False
 
     # ------------------------------------------------------------- lifecycle
     @classmethod
     async def create(cls, settings: Settings = default_settings) -> "AuditorRuntime":
         """Build the runtime: load cached models, create the store, wire up."""
         rt = cls(settings)
-
+        rt.store = await create_store(settings)
+        saved_config = await rt.store.load_app_config()
+        if "utility_rate_usd_per_kwh" in saved_config:
+            settings.utility_rate_usd_per_kwh = float(saved_config["utility_rate_usd_per_kwh"])
+            rt.analytics.rate = settings.utility_rate_usd_per_kwh
+        for config in await rt.store.load_zone_configs():
+            try:
+                zone = ZoneDef(**config)
+            except (TypeError, ValueError):
+                continue
+            rt.zones[zone.zone_id] = zone
+            register_zone(zone)
+        rt.analytics.zone_rates = {
+            zone.zone_id: (zone.utility_rate_usd_per_kwh if zone.utility_rate_usd_per_kwh is not None else settings.utility_rate_usd_per_kwh)
+            for zone in rt.zones.values()
+        }
         rt.detector = load_detector(settings.model_dir, settings)
         rt.predictor = BaselinePredictor(_load_baseline_models(settings))
-        rt.classifier = DiagnosticClassifier(ZONE_BY_ID)
+        for idx, zone in enumerate(rt.zones.values()):
+            if zone.zone_id not in rt.predictor.models:
+                baseline_series = await asyncio.to_thread(
+                    _zone_baseline_series, zone, 2, 600.0, settings.random_state + idx
+                )
+                rt.predictor.models[zone.zone_id] = await asyncio.to_thread(
+                    _fit_baseline_models, zone, baseline_series, settings.random_state + idx
+                )
+        rt.classifier = DiagnosticClassifier(rt.zones)
         rt.engines = {
             zone.zone_id: FeatureEngine(
                 window_points=settings.window_points,
                 min_samples=settings.window_min_samples,
                 fast_window_points=settings.fast_window_points,
             )
-            for zone in ZONE_CATALOG
+            for zone in rt.zones.values()
         }
         rt._prewarm_engines(settings)
-        rt.store = await create_store(settings)
         rt.log.add(
             f"runtime ready · detector={'loaded' if rt.detector else 'missing'} · "
             f"storage={rt.store.kind if rt.store else 'n/a'}"
@@ -141,7 +167,7 @@ class AuditorRuntime:
         base = datetime.now(timezone.utc)
         interval_h = settings.emit_interval_seconds / 3600.0
         start_hf = (base.hour + base.minute / 60.0 + base.second / 3600.0)
-        for zone in ZONE_CATALOG:
+        for zone in self.zones.values():
             engine = self.engines[zone.zone_id]
             gen = TelemetryGenerator(
                 settings.building_id,
@@ -192,8 +218,14 @@ class AuditorRuntime:
     def apply_command(self, cmd: SimulatorCommand) -> InjectionState:
         """Apply an injection-panel command and return the affected zone state."""
         kind = cmd.anomaly
-        if cmd.action == "set_occupancy" and cmd.occupancy is not None:
-            zone = next((z for z in ZONE_CATALOG if z.zone_id == cmd.zone), None)
+        if cmd.action == "set_time_of_day" and cmd.time_minutes is not None:
+            self.controller.set_time_of_day(cmd.time_minutes)
+            self.log.add(f"simulation clock -> {cmd.time_minutes // 60:02d}:{cmd.time_minutes % 60:02d}")
+        elif cmd.action == "resume_time_of_day":
+            self.controller.clear_time_of_day()
+            self.log.add("simulation clock resumed from system time")
+        elif cmd.action == "set_occupancy" and cmd.occupancy is not None:
+            zone = self.zones.get(cmd.zone)
             if zone is not None:
                 occupancy = min(zone.occupancy_max, cmd.occupancy)
                 self.controller.set_occupancy(cmd.zone, occupancy)
@@ -202,8 +234,18 @@ class AuditorRuntime:
             "co2_ppm", "humidity_percent", "temp_indoor_c", "temp_outdoor_c",
             "hvac_kw", "lighting_kw", "plug_load_kw",
         } and cmd.value is not None:
-            self.controller.set_sensor_override(cmd.zone, cmd.metric, cmd.value)
-            self.log.add(f"override {cmd.metric}={cmd.value:g} -> {cmd.zone}")
+            limits = {
+                "co2_ppm": (350.0, 5000.0), "humidity_percent": (0.0, 100.0),
+                "temp_indoor_c": (-20.0, 60.0), "temp_outdoor_c": (-20.0, 60.0),
+                "hvac_kw": (0.0, 100.0), "lighting_kw": (0.0, 100.0),
+                "plug_load_kw": (0.0, 100.0),
+            }
+            low, high = limits[cmd.metric]
+            if cmd.zone in self.zones and low <= cmd.value <= high:
+                self.controller.set_sensor_override(cmd.zone, cmd.metric, cmd.value)
+                self.log.add(f"override {cmd.metric}={cmd.value:g} -> {cmd.zone}")
+            else:
+                self.log.add(f"ignored invalid {cmd.metric} override for {cmd.zone}")
         elif cmd.action == "clear_metric" and cmd.metric in {
             "co2_ppm", "humidity_percent", "temp_indoor_c", "temp_outdoor_c",
             "hvac_kw", "lighting_kw", "plug_load_kw",
@@ -233,6 +275,71 @@ class AuditorRuntime:
         self._broadcast({"type": "injection", "state": state.model_dump()})
         self._broadcast({"type": "log", "lines": self.log.snapshot()})
         return state
+
+    async def register_zone(self, zone: ZoneDef, replace: bool = False) -> None:
+        """Register a configured zone, seed its live window, and start its generator."""
+        if zone.zone_id in self.zones and not replace:
+            raise ValueError(f"zone already exists: {zone.zone_id}")
+        if replace:
+            self.flush_zone(zone.zone_id)
+        self.zones[zone.zone_id] = zone
+        register_zone(zone)
+        self.analytics.zone_rates[zone.zone_id] = (
+            zone.utility_rate_usd_per_kwh
+            if zone.utility_rate_usd_per_kwh is not None
+            else self.settings.utility_rate_usd_per_kwh
+        )
+        self.classifier.zones[zone.zone_id] = zone
+        self.engines[zone.zone_id] = FeatureEngine(
+            window_points=self.settings.window_points,
+            min_samples=self.settings.window_min_samples,
+            fast_window_points=self.settings.fast_window_points,
+        )
+        seed_gen = TelemetryGenerator(
+            self.settings.building_id, zone, self.controller, self._noop_sink,
+            self.settings.emit_interval_seconds, seed=self.settings.random_state,
+        )
+        base = datetime.now(timezone.utc)
+        history = [
+            seed_gen._normal_sample(
+                base,
+                (self.controller.simulated_hour(base) - i * self.settings.emit_interval_seconds / 3600.0) % 24.0,
+            )
+            for i in range(self.settings.window_points)
+        ]
+        self.engines[zone.zone_id].seed(list(reversed(history)))
+        baseline_series = await asyncio.to_thread(
+            _zone_baseline_series, zone, 2, 600.0, self.settings.random_state
+        )
+        if self.predictor is None or self.classifier is None:
+            raise RuntimeError("runtime models must be initialized before registering zones")
+        self.predictor.models[zone.zone_id] = await asyncio.to_thread(
+            _fit_baseline_models, zone, baseline_series, self.settings.random_state
+        )
+        if self._running:
+            self._start_zone(zone)
+
+    @staticmethod
+    async def _noop_sink(*args, **kwargs) -> None:
+        return None
+
+    def _start_zone(self, zone: ZoneDef) -> None:
+        if zone.zone_id in self._zone_tasks:
+            self._zone_tasks[zone.zone_id].cancel()
+        generator = TelemetryGenerator(
+            building_id=zone.building_id,
+            zone=zone,
+            controller=self.controller,
+            sink=self._on_sample,
+            interval=self.settings.emit_interval_seconds,
+            seed=self.settings.random_state + len(self._zone_tasks),
+        )
+        self._zone_tasks[zone.zone_id] = asyncio.create_task(generator.run())
+
+    def reload_models(self) -> None:
+        """Swap in freshly trained local model artifacts without restarting the app."""
+        self.detector = load_detector(self.settings.model_dir, self.settings)
+        self.predictor = BaselinePredictor(_load_baseline_models(self.settings))
 
     def flush_zone(self, zone_id: str) -> None:
         """Drop the zone's feature window + finalise any open accrual.
@@ -272,6 +379,8 @@ class AuditorRuntime:
             injected_state=self.controller.state_string(zone),
             occupancy_override=self.controller.occupancy_override(zone),
             sensor_overrides=self.controller.sensor_overrides(zone),
+            time_of_day_override_minutes=self.controller.time_of_day_override(),
+            actuations=self.controller.actuation_overrides(zone),
         )
 
     def controller_snapshot(self) -> Dict[str, dict]:
@@ -280,7 +389,7 @@ class AuditorRuntime:
                 **self.injection_state(z.zone_id).model_dump(),
                 "occupancy_max": z.occupancy_max,
             }
-            for z in ZONE_CATALOG
+            for z in self.zones.values()
         }
 
     # ------------------------------------------------------------------ sink
@@ -294,7 +403,8 @@ class AuditorRuntime:
         if fv is not None and self.detector is not None and self.classifier is not None:
             score = self.detector.score(fv.X)
             verdict = self.classifier.classify(
-                zone, fv, self.predictor.predicted_kws(zone.zone_id, fv), score
+                zone, fv, self.predictor.predicted_kws(zone.zone_id, fv),
+                score, self.detector.threshold,
             )
             scored = point.model_copy(
                 update={
@@ -319,6 +429,17 @@ class AuditorRuntime:
     ) -> None:
         """Track the latest verdict and accrue/close anomaly windows."""
         self.current[zone.zone_id] = verdict
+
+        if verdict.diagnosis == "UNOCCUPIED_LIGHTING_WASTE":
+            if self.controller.actuation_overrides(zone.zone_id).get("lighting_kw") != 0.0:
+                self.controller.set_actuation(zone.zone_id, "lighting_kw", 0.0)
+                action = {
+                    "action": "OVERRIDE", "target": "lighting", "value": 0.0,
+                    "zone_id": zone.zone_id, "reason": verdict.diagnosis,
+                    "message": f"System automatically disabled {zone.zone_id} lighting due to 0 occupancy",
+                }
+                self.log.add(action["message"])
+                self._broadcast({"type": "actuation", "actuation": action})
 
         if not verdict.is_anomaly:
             self._close_accrual(zone, fv)
@@ -383,7 +504,11 @@ class AuditorRuntime:
             iforest_score=accrual.min_score,
             energy_wasted_kwh=round(accrual.energy_wasted_kwh, 4),
             financial_waste_usd=round(
-                accrual.energy_wasted_kwh * self.settings.utility_rate_usd_per_kwh, 4
+                accrual.energy_wasted_kwh * (
+                    self.zones[zone_id].utility_rate_usd_per_kwh
+                    if self.zones[zone_id].utility_rate_usd_per_kwh is not None
+                    else self.settings.utility_rate_usd_per_kwh
+                ), 4
             ),
             peak_kw=round(accrual.peak_kw, 4),
             sample_count=accrual.sample_count,
@@ -413,20 +538,17 @@ class AuditorRuntime:
     # ------------------------------------------------------------------ run
     async def run(self) -> None:
         """Start one generation task per zone and run until cancelled."""
-        tasks = [
-            asyncio.create_task(
-                TelemetryGenerator(
-                    building_id=self.settings.building_id,
-                    zone=zone,
-                    controller=self.controller,
-                    sink=self._on_sample,
-                    interval=self.settings.emit_interval_seconds,
-                    seed=self.settings.random_state + idx,
-                ).run()
-            )
-            for idx, zone in enumerate(ZONE_CATALOG)
-        ]
-        await asyncio.gather(*tasks)
+        self._running = True
+        for zone in self.zones.values():
+            self._start_zone(zone)
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self._running = False
+            for task in self._zone_tasks.values():
+                task.cancel()
+            await asyncio.gather(*self._zone_tasks.values(), return_exceptions=True)
+            self._zone_tasks.clear()
 
 
 def _load_baseline_models(settings: Settings) -> Dict[str, object]:

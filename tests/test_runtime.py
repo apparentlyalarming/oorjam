@@ -27,10 +27,11 @@ async def _pump_fault(rt, zone, kind, samples: int = 40) -> list[str]:
     gen = TelemetryGenerator(
         "bldg_01", zone, rt.controller, sink=asyncio.sleep, interval=0.25, seed=3
     )
-    base = datetime(2026, 9, 24, 14, 0, tzinfo=timezone.utc)
+    hour = 2 if kind == AnomalyKind.EQUIPMENT_DRIFT else 14
+    base = datetime(2026, 9, 24, hour, 0, tzinfo=timezone.utc)
     diags: list[str] = []
     for i in range(samples):
-        hf = 14.0 + i * 0.25 / 3600.0
+        hf = hour + i * 0.25 / 3600.0
         point = gen._normal_sample(base, hf)
         gen._apply_faults(point)
         point.injected_state = gen.controller.state_string(zone.zone_id)

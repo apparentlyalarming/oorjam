@@ -40,6 +40,28 @@ class InjectionController:
         self._active: Dict[str, Set[str]] = defaultdict(set)
         self._occupancy_override: Dict[str, int] = {}
         self._sensor_overrides: Dict[str, Dict[str, float]] = defaultdict(dict)
+        self._actuation_overrides: Dict[str, Dict[str, float]] = defaultdict(dict)
+        self._time_of_day_override_minutes: int | None = None
+
+    def set_time_of_day(self, minutes: int) -> None:
+        self._time_of_day_override_minutes = min(1439, max(0, minutes))
+
+    def clear_time_of_day(self) -> None:
+        self._time_of_day_override_minutes = None
+
+    def time_of_day_override(self) -> int | None:
+        return self._time_of_day_override_minutes
+
+    def simulated_hour(self, now: datetime) -> float:
+        if self._time_of_day_override_minutes is not None:
+            return self._time_of_day_override_minutes / 60.0
+        return now.hour + now.minute / 60.0 + now.second / 3600.0
+
+    def set_actuation(self, zone: str, metric: str, value: float) -> None:
+        self._actuation_overrides[zone][metric] = value
+
+    def actuation_overrides(self, zone: str) -> Dict[str, float]:
+        return dict(self._actuation_overrides.get(zone, {}))
 
     def set_occupancy(self, zone: str, occupancy: int) -> None:
         self._occupancy_override[zone] = max(0, occupancy)
@@ -49,6 +71,7 @@ class InjectionController:
 
     def clear_occupancy(self, zone: str) -> None:
         self._occupancy_override.pop(zone, None)
+
 
     def set_sensor_override(self, zone: str, metric: str, value: float) -> None:
         self._sensor_overrides[zone][metric] = value
@@ -78,11 +101,14 @@ class InjectionController:
         self._active.pop(zone, None)
         self._occupancy_override.pop(zone, None)
         self._sensor_overrides.pop(zone, None)
+        self._actuation_overrides.pop(zone, None)
 
     def reset(self) -> None:
         self._active.clear()
         self._occupancy_override.clear()
         self._sensor_overrides.clear()
+        self._actuation_overrides.clear()
+        self._time_of_day_override_minutes = None
 
     def is_active(self, zone: str, kind: AnomalyKind) -> bool:
         return kind.value in self._active.get(zone, ())
@@ -128,6 +154,9 @@ class TelemetryGenerator:
         self.sink = sink
         self.interval = interval
         self._rng = random.Random(seed)
+        self._occupancy_state: float | None = None
+        self._co2_state: float | None = None
+        self._sample_index = 0
 
     # ------------------------------------------------------------------ synth
     def _normal_sample(self, now: datetime, hour_fraction: float) -> TelemetryPoint:
@@ -149,7 +178,16 @@ class TelemetryGenerator:
         # Diurnal rhythm multiplied by small shot noise keeps peaks variable.
         factor = max(0.0, diurnal_factor(hour_fraction) * weekend_scale) * rng.uniform(0.95, 1.05)
 
-        occupancy = max(0, min(z.occupancy_max, int(z.occupancy_max * factor + rng.gauss(0.0, z.occupancy_max * 0.04))))
+        target_occupancy = z.occupancy_max * factor
+        if self._occupancy_state is None:
+            self._occupancy_state = target_occupancy
+        # People arrive and leave gradually with small random movement around
+        # the daily demand curve instead of independent whole-zone jumps.
+        self._occupancy_state += 0.22 * (target_occupancy - self._occupancy_state)
+        self._occupancy_state += rng.gauss(0.0, max(0.2, z.occupancy_max * 0.006))
+        self._occupancy_state = min(float(z.occupancy_max), max(0.0, self._occupancy_state))
+        occupancy = int(round(self._occupancy_state + rng.gauss(0.0, z.occupancy_max * 0.012)))
+        occupancy = max(0, min(z.occupancy_max, occupancy))
         load_occupancy = occupancy
         occupancy_override = self.controller.occupancy_override(z.zone_id)
         if occupancy_override is not None:
@@ -157,7 +195,16 @@ class TelemetryGenerator:
             # the normal daily pattern so mismatch scenarios can be simulated.
             occupancy = min(z.occupancy_max, occupancy_override)
 
-        co2_ppm = max(350.0, 400.0 + occupancy * z.co2_per_occupant_ppm + rng.gauss(0.0, 45.0))
+        # Occupants contribute more ppm in a small room; volume scales the
+        # per-person concentration response while the outside baseline stays.
+        volume_scale = 300.0 / max(60.0, z.volume_m3)
+        co2_target = 400.0 + occupancy * z.co2_per_occupant_ppm * volume_scale
+        # First-order room mixing: larger room volume gives a longer response
+        # time and lower steady concentration for the same occupant count.
+        tau_seconds = max(30.0, z.volume_m3 * 0.5)
+        alpha = 1.0 - math.exp(-self.interval / tau_seconds)
+        self._co2_state = co2_target if self._co2_state is None else self._co2_state + alpha * (co2_target - self._co2_state)
+        co2_ppm = max(350.0, self._co2_state + rng.gauss(0.0, 45.0))
         # Normal relative humidity stays in the ~45-65% band even at peak
         # occupancy, so a genuine envelope leak (> 72%) is unambiguous.
         humidity_percent = min(92.0, max(25.0, 46.0 + 12.0 * factor + 0.03 * occupancy + rng.gauss(0.0, 2.5)))
@@ -167,7 +214,12 @@ class TelemetryGenerator:
         temp_indoor_c = 22.0 + 0.04 * (temp_outdoor_c - 23.0) + rng.gauss(0.0, 0.35)
 
         delta_t = max(0.0, temp_outdoor_c - temp_indoor_c)  # positive -> cooling duty
-        hvac_kw = z.hvac_base_kw + 1.7 * delta_t + 0.22 * load_occupancy + 0.5 * z.hvac_base_kw * factor + rng.gauss(0.0, 0.8)
+        # Compressor duty cycles between high and reduced output while the
+        # circulation and occupant loads remain continuous.
+        compressor_duty = 1.0 if self._sample_index % 20 < 15 else 0.22
+        compressor_kw = (1.7 * delta_t + 0.5 * z.hvac_base_kw * factor) * compressor_duty
+        hvac_kw = z.hvac_base_kw + compressor_kw + 0.22 * load_occupancy + rng.gauss(0.0, 0.8)
+        self._sample_index += 1
 
         lighting_kw = max(0.4, 1.6 + 0.135 * load_occupancy + rng.gauss(0.0, 0.35))
         plug_load_kw = max(0.8, 5.5 + 0.10 * load_occupancy + 0.5 * (0.02 * z.occupancy_max) * factor + rng.gauss(0.0, 0.5))
@@ -176,6 +228,7 @@ class TelemetryGenerator:
             timestamp=_now_iso(),
             building_id=self.building_id,
             zone_id=z.zone_id,
+            simulated_hour_fraction=hour_fraction,
             telemetry=Telemetry(
                 occupancy_count=occupancy,
                 co2_ppm=round(co2_ppm, 2),
@@ -223,19 +276,28 @@ class TelemetryGenerator:
             t.plug_load_kw += 3.4
 
     # ------------------------------------------------------------------ loop
+    def generate_point(self, now: datetime | None = None) -> TelemetryPoint:
+        """Create one complete telemetry frame with faults and overrides applied."""
+        now = now or datetime.now(timezone.utc)
+        hour_fraction = self.controller.simulated_hour(now)
+        point = self._normal_sample(now, hour_fraction)
+        self._apply_faults(point)
+        for metric, value in self.controller.sensor_overrides(point.zone_id).items():
+            setattr(point.telemetry, metric, int(value) if metric == "occupancy_count" else value)
+        # Actuator commands are applied last, so they take precedence over test
+        # sensor overrides and reach the simulated equipment on its next tick.
+        for metric, value in self.controller.actuation_overrides(point.zone_id).items():
+            setattr(point.telemetry, metric, value)
+        point.injected_state = self.controller.state_string(point.zone_id)
+        point.telemetry.hvac_kw = round(point.telemetry.hvac_kw, 3)
+        point.telemetry.lighting_kw = round(point.telemetry.lighting_kw, 3)
+        point.telemetry.plug_load_kw = round(point.telemetry.plug_load_kw, 3)
+        return point
+
     async def run(self) -> None:
         """Infinite generation loop - one sample per ``interval`` seconds."""
         while True:
             now = datetime.now(timezone.utc)
-            hour_fraction = now.hour + now.minute / 60.0 + now.second / 3600.0
-            point = self._normal_sample(now, hour_fraction)
-            self._apply_faults(point)
-            for metric, value in self.controller.sensor_overrides(point.zone_id).items():
-                setattr(point.telemetry, metric, int(value) if metric == "occupancy_count" else value)
-            point.injected_state = self.controller.state_string(point.zone_id)
-            # Round rounded metrics again so results are stable for storage.
-            point.telemetry.hvac_kw = round(point.telemetry.hvac_kw, 3)
-            point.telemetry.lighting_kw = round(point.telemetry.lighting_kw, 3)
-            point.telemetry.plug_load_kw = round(point.telemetry.plug_load_kw, 3)
+            point = self.generate_point(now)
             await self.sink(self.zone, point)
             await asyncio.sleep(self.interval)

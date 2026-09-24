@@ -21,7 +21,22 @@
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:18px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
   .card h3{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:600}
-  .zone-row{display:flex;align-items:center;justify-content:space-between}
+  details.zone-card{padding:0;overflow:hidden}
+  .zone-summary{display:block;list-style:none;cursor:pointer;padding:14px}
+  .zone-summary::-webkit-details-marker{display:none}
+  .zone-title,.zone-row{display:flex;align-items:center;justify-content:space-between;gap:10px}
+  .zone-title h3{margin:0}
+  .problem-count{font-size:11px;font-weight:650;white-space:nowrap}
+  .problem-count.clear{color:var(--green)}
+  .problem-count.warning{color:var(--yellow)}
+  .problem-count.critical{color:var(--red)}
+  .problem-meter{height:7px;margin:10px 0 8px;border-radius:10px;background:#0b1220;overflow:hidden}
+  .problem-meter-fill{display:block;height:100%;min-width:4px;border-radius:inherit;background:linear-gradient(90deg,#22c55e 0%,#a3e635 30%,#eab308 58%,#f97316 79%,#ef4444 100%);transition:width .25s ease}
+  .zone-summary-meta{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--muted);font-size:11px}
+  .problem-list{border-top:1px solid var(--line);padding:9px 14px 12px;font-size:12px}
+  .problem-list ul{margin:0;padding-left:18px}
+  .problem-list li{padding:3px 0}
+  .problem-list .no-problems{color:var(--green)}
   .marker-dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
   .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
   .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
@@ -36,9 +51,6 @@
   .live-metric{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
   .live-metric .label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
   .live-metric .value{font-size:19px;font-weight:650;margin-top:3px}
-  .alert-banner{display:none;margin:0 0 14px;padding:12px 15px;border:1px solid #ef4444;border-radius:10px;background:#451a1a;color:#fee2e2}
-  .alert-banner.visible{display:flex;align-items:center;gap:10px}
-  .alert-banner button{margin-left:auto;background:transparent;border:1px solid #fca5a5;color:#fee2e2;border-radius:7px;padding:5px 9px;cursor:pointer}
   .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px}
   .toolbar select{background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px}
   .legend{display:flex;gap:14px;font-size:12px;color:var(--muted)}
@@ -51,6 +63,30 @@
   .anom{display:flex;align-items:center;gap:8px;padding:7px 2px;border-bottom:1px solid var(--line);font-size:12.5px}
   .muted{color:var(--muted)}
   .pill{font-size:10px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--muted)}
+  .manager-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:12px 0}
+  .manager-grid label{display:grid;gap:4px;color:var(--muted);font-size:11px}
+  .manager-grid input,.manager-grid select{width:100%;background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:8px}
+  .header-link{background:#0b1220;color:var(--yellow);border:1px solid var(--line);border-radius:7px;padding:8px 12px;cursor:pointer;text-decoration:none;font-size:12px}
+  .topology-tree{margin:12px 0;color:var(--muted);font-size:12px}
+  .topology-tree li{margin:5px 0}
+  .manager-status{font-size:12px;color:var(--muted);margin:8px 0}
+  .action-entry{padding:7px 2px;border-bottom:1px solid var(--line);font-size:12px}
+  .view-tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--line);padding-bottom:10px}
+  .view-tab{border:1px solid var(--line);border-radius:8px;background:#0b1220;color:var(--muted);padding:8px 13px;cursor:pointer;font-size:12px}
+  .view-tab.active{background:#334155;color:var(--text);border-color:#64748b}
+  .view[hidden]{display:none}
+  .view-title{display:flex;align-items:center;gap:12px;margin:2px 0 14px}
+  .view-title h2{font-size:16px;margin:0}
+  .view-title .spacer{flex:1}
+  .primary-button{background:#0b1220;color:var(--yellow);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
+  .sim-overlay{position:fixed;inset:0;z-index:20;background:rgba(2,6,23,.42);display:flex;justify-content:flex-end}
+  .sim-overlay[hidden]{display:none}
+  .sim-panel{height:100%;width:min(600px,94vw);background:var(--bg);border-left:1px solid var(--line);box-shadow:-16px 0 40px rgba(0,0,0,.35);display:flex;flex-direction:column}
+  .sim-panel-head{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .sim-panel-head b{font-size:13px}
+  .sim-panel-head button{margin-left:auto;border:1px solid var(--line);border-radius:7px;background:#0b1220;color:var(--text);padding:6px 10px;cursor:pointer}
+  .sim-panel iframe{border:0;width:100%;flex:1;min-height:0;background:var(--bg)}
+  @media(max-width:650px){.kpis{grid-template-columns:1fr}.grid2{grid-template-columns:1fr}.view-tabs{overflow:auto}.view-tab{white-space:nowrap}}
 </style>
 </head>
 <body>
@@ -60,12 +96,15 @@
   <span class="badge" id="badge-storage">storage —</span>
   <span class="badge" id="badge-detector">detector —</span>
   <span class="badge">uptime <span id="up">0</span>s</span>
+  <button class="header-link" id="open-simulator" type="button">Simulator controls</button>
 </header>
 <main>
-  <div class="alert-banner" id="anomaly-alert" role="alert" aria-live="assertive">
-    <b>⚠ Anomaly detected</b><span id="anomaly-alert-text"></span>
-    <button id="dismiss-alert">Dismiss</button>
-  </div>
+  <nav class="view-tabs" aria-label="Dashboard views">
+    <button class="view-tab active" type="button" data-view="operations">Live Dashboard</button>
+    <button class="view-tab" type="button" data-view="analytics">Analytics &amp; ROI</button>
+    <button class="view-tab" type="button" data-view="admin">Configuration &amp; ML</button>
+  </nav>
+  <section class="view" id="view-operations">
   <div class="kpis">
     <div class="kpi"><div class="label">Energy wasted</div><div class="value" id="kpi-kwh">0.00 kWh</div></div>
     <div class="kpi"><div class="label">Financial waste</div><div class="value" id="kpi-usd">$0.00</div></div>
@@ -83,7 +122,6 @@
       <span><i style="background:var(--red)"></i>High-severity waste</span>
     </div>
     <div class="spacer"></div>
-    <button id="btn-report" style="background:#0b1220;color:var(--yellow);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px">Download report (md)</button>
   </div>
 
   <div class="live-heading"><b>Live telemetry</b><span id="live-updated">Waiting for selected zone data…</span></div>
@@ -93,24 +131,77 @@
 
   <div class="grid2">
     <div class="chart-panel">
+      <h3>Anomaly feed</h3>
+      <div class="feed" id="feed"><div class="muted">Waiting for events…</div></div>
+    </div>
+    <div class="chart-panel">
+      <h3>Automated actions</h3>
+      <div class="feed" id="actuation-feed"><div class="muted">No actions yet</div></div>
+    </div>
+  </div>
+  </section>
+
+  <section class="view" id="view-analytics" hidden>
+    <div class="view-title"><h2>Analytics &amp; ROI</h2><div class="spacer"></div><button id="btn-report" class="primary-button">Download report (md)</button></div>
+    <div class="chart-panel">
       <h3>Top recommendations (payback &rarr; ROI)</h3>
       <table>
         <thead><tr><th>#</th><th>Measure</th><th>Category</th><th>Capital</th><th>Annual net</th><th>Payback</th><th>ROI</th></tr></thead>
         <tbody id="rec-body"></tbody>
       </table>
     </div>
+  </section>
+
+  <section class="view" id="view-admin" hidden>
+    <div class="view-title"><h2>Configuration &amp; ML Training</h2></div>
     <div class="chart-panel">
-      <h3>Anomaly feed</h3>
-      <div class="feed" id="feed"><div class="muted">Waiting for events…</div></div>
+      <h3>Building, floor and zone configuration</h3>
+      <div id="topology-tree" class="topology-tree">Loading topology…</div>
+      <div class="manager-grid">
+        <label>Utility rate ($/kWh)<input id="utility-rate" type="number" min="0" max="100" step="0.001" value="0.15"></label>
+      </div>
+      <button id="save-rate" class="primary-button">Save utility rate</button>
+      <h3 style="margin-top:20px">Create or edit a zone</h3>
+      <form id="zone-form">
+        <input id="zone-edit-id" type="hidden">
+        <div class="manager-grid">
+          <label>Building ID<input id="zone-building" required maxlength="80" value="bldg_01"></label>
+          <label>Floor ID<input id="zone-floor" required maxlength="80" value="floor_1"></label>
+          <label>Zone ID<input id="zone-id" required maxlength="80" pattern="[A-Za-z0-9_-]+"></label>
+          <label>Zone type<select id="zone-type"><option>Office</option><option>Server Room</option><option>Retail</option><option>Classroom</option><option>Warehouse</option><option>Other</option></select></label>
+          <label>Area (m²)<input id="zone-area" required type="number" min="1" step="0.1" value="100"></label>
+          <label>Ceiling height (m)<input id="zone-height" required type="number" min="1" step="0.1" value="3"></label>
+          <label>Maximum occupancy<input id="zone-occupancy" required type="number" min="1" step="1" value="30"></label>
+          <label>Open time<input id="zone-open" required type="time" value="08:00"></label>
+          <label>Close time<input id="zone-close" required type="time" value="18:00"></label>
+          <label>Zone utility rate override ($/kWh)<input id="zone-rate" type="number" min="0" max="100" step="0.001" placeholder="Use building rate"></label>
+        </div>
+        <button type="submit" id="zone-save" class="primary-button">Create zone</button>
+        <button type="button" id="zone-cancel" class="primary-button" style="display:none">Cancel edit</button>
+      </form>
+      <h3 style="margin-top:20px">Train from historical CSV</h3>
+      <p class="muted" style="font-size:12px">Required columns: timestamp, zone_id, occupancy_count, co2_ppm, humidity_percent, temp_indoor_c, temp_outdoor_c, hvac_kw, lighting_kw, plug_load_kw. Upload at least 30 rows per included zone.</p>
+      <div class="manager-grid"><label>CSV file<input id="training-file" type="file" accept=".csv,text/csv"></label></div>
+      <button id="train-model" class="primary-button">Upload and retrain</button>
+      <div class="manager-status" id="manager-status" aria-live="polite"></div>
     </div>
-  </div>
+  </section>
 </main>
+
+<div class="sim-overlay" id="sim-overlay" hidden>
+  <section class="sim-panel" role="dialog" aria-modal="true" aria-label="Simulator controls">
+    <div class="sim-panel-head"><b>Simulator controls</b><button type="button" id="close-simulator" aria-label="Close simulator controls">Close</button></div>
+    <iframe id="simulator-frame" title="Simulator controls"></iframe>
+  </section>
+</div>
 
 <script>
 const HEX = {green:'#22c55e', red:'#ef4444', orange:'#f97316', yellow:'#eab308'};
 const MAX = 360;
 let upBase = 0;
 let ws = null;
+const liveAnomalies = new Map();
+let closedAnomalies = [];
 const zoneId = () => document.getElementById('zone-select').value;
 const liveMetricDefs = [
   ['occupancy_count','Occupancy','people',0], ['co2_ppm','CO₂','ppm',1],
@@ -118,7 +209,6 @@ const liveMetricDefs = [
   ['temp_outdoor_c','Outdoor temp','°C',1], ['hvac_kw','HVAC','kW',2],
   ['lighting_kw','Lighting','kW',2], ['plug_load_kw','Plug load','kW',2],
 ];
-const alertedZones = new Map();
 
 const chartDefs = [
   {key:'hvac_kw',      title:'HVAC Consumption (kW)',   color:'#60a5fa'},
@@ -168,21 +258,6 @@ function updateLiveMetrics(point){
   document.getElementById('live-updated').textContent = `Updated ${new Date(point.timestamp).toLocaleTimeString()}`;
 }
 
-function showAnomalyAlert(zone, diagnosis, explanation=''){
-  const previous = alertedZones.get(zone);
-  if (previous?.diagnosis !== diagnosis) alertedZones.set(zone, {diagnosis, explanation});
-  renderAnomalyAlerts();
-}
-
-function renderAnomalyAlerts(){
-  const messages = [...alertedZones.entries()].map(([zone, alert]) =>
-    `${zone}${zone !== zoneId() ? ' (not selected)' : ''} · ${alert.diagnosis}${alert.explanation ? ' · '+alert.explanation : ''}`
-  );
-  const banner = document.getElementById('anomaly-alert');
-  document.getElementById('anomaly-alert-text').textContent = messages.join('  |  ');
-  banner.classList.toggle('visible', messages.length > 0);
-}
-
 function pushPoint(p){
   const m = p.marker || 'green';
   const label = (p.timestamp||'').slice(11,19);
@@ -212,19 +287,22 @@ function renderZoneCards(status){
   const wrap = document.getElementById('zone-cards');
   wrap.innerHTML = '';
   status.forEach(z => {
-    const el = document.createElement('div');
-    el.className = 'card';
+    const injected = (z.injected_state || 'normal').split(',').filter(tag => tag && tag !== 'normal');
+    const problems = injected.map(tag => `Simulator: ${tag.replaceAll('_',' ')}`);
+    if (z.diagnosis) problems.push(`Detected: ${z.diagnosis.replaceAll('_',' ')}`);
+    const count = problems.length;
+    const level = Math.max(4, Math.min(100, count / 5 * 100));
+    const tone = count === 0 ? 'clear' : count < 3 ? 'warning' : 'critical';
+    const el = document.createElement('details');
+    el.className = 'card zone-card';
     el.id = 'card-'+z.zone_id;
     el.innerHTML = `
-      <h3>${z.zone_id}</h3>
-      <div class="zone-row">
-        <span><span class="marker-dot" style="background:${HEX[z.marker]||HEX.green}"></span> ${z.severity||'normal'}</span>
-        <span class="pill">${z.injected_state||'normal'}</span>
-      </div>
-      <div style="margin-top:8px;color:var(--muted);font-size:12px">
-        ${z.diagnosis ? '⚠️ '+z.diagnosis : 'within normal envelope'}<br>
-        $${z.exposure_usd.toLocaleString(undefined,{maximumFractionDigits:2})} wasted
-      </div>`;
+      <summary class="zone-summary">
+        <div class="zone-title"><h3>${z.zone_id}</h3><span class="problem-count ${tone}">${count} ${count === 1 ? 'problem' : 'problems'}</span></div>
+        <div class="problem-meter" aria-label="${count} active problems"><span class="problem-meter-fill" style="width:${level}%"></span></div>
+        <div class="zone-summary-meta"><span><span class="marker-dot" style="background:${HEX[z.marker]||HEX.green}"></span>${z.severity||'normal'}</span><span>$${Number(z.exposure_usd||0).toLocaleString(undefined,{maximumFractionDigits:2})} wasted</span></div>
+      </summary>
+      <div class="problem-list">${count ? `<ul>${problems.map(problem => `<li>${problem}</li>`).join('')}</ul>` : '<div class="no-problems">No active problems · within normal envelope</div>'}</div>`;
     wrap.appendChild(el);
   });
 }
@@ -245,16 +323,125 @@ function renderReport(rep){
   });
 }
 
-function pushAnomaly(a){
+function renderAnomalyFeed(){
   const feed = document.getElementById('feed');
-  if (feed.firstChild && feed.firstChild.textContent.startsWith('Waiting')) feed.innerHTML='';
-  const el = document.createElement('div');
-  el.className = 'anom';
-  el.innerHTML = `<span class="marker-dot" style="background:${HEX[a.marker]||HEX.green}"></span>`+
-    `<b>${a.diagnosis}</b> · ${a.zone_id}`+
-    `<span class="spacer"></span>${a.energy_wasted_kwh.toFixed(2)} kWh · $${a.financial_waste_usd.toFixed(2)}`;
-  feed.prepend(el);
-  while (feed.children.length > 60) feed.lastChild.remove();
+  feed.replaceChildren();
+  const active = [...liveAnomalies.values()].reverse();
+  if (!active.length && !closedAnomalies.length){
+    const empty = document.createElement('div'); empty.className = 'muted'; empty.textContent = 'Waiting for events…'; feed.appendChild(empty); return;
+  }
+  const addRow = (record, isLive) => {
+    const row = document.createElement('div'); row.className = 'anom';
+    const dot = document.createElement('span'); dot.className = 'marker-dot'; dot.style.background = HEX[record.marker] || HEX.green;
+    const title = document.createElement('b'); title.textContent = record.diagnosis || 'Energy anomaly';
+    const zone = document.createElement('span'); zone.textContent = `· ${record.zone_id}`;
+    const spacer = document.createElement('span'); spacer.className = 'spacer';
+    const detail = document.createElement('span');
+    detail.textContent = isLive ? `LIVE · ${record.severity || 'anomaly'}`
+      : `${Number(record.energy_wasted_kwh || 0).toFixed(2)} kWh · $${Number(record.financial_waste_usd || 0).toFixed(2)}`;
+    row.append(dot, title, zone, spacer, detail); feed.appendChild(row);
+  };
+  active.forEach(record => addRow(record, true));
+  closedAnomalies.forEach(record => addRow(record, false));
+}
+
+function pushVerdict(verdict){
+  if (verdict.is_anomaly){
+    liveAnomalies.set(verdict.zone_id, verdict);
+  } else {
+    liveAnomalies.delete(verdict.zone_id);
+  }
+  renderAnomalyFeed();
+}
+
+function pushAnomaly(a){
+  const key = `${a.zone_id}:${a.start_timestamp}`;
+  if (!closedAnomalies.some(record => `${record.zone_id}:${record.start_timestamp}` === key)){
+    closedAnomalies.unshift(a);
+    closedAnomalies = closedAnomalies.slice(0, 60);
+  }
+  renderAnomalyFeed();
+}
+
+async function loadAnomalyFeed(){
+  try{
+    const response = await fetch('/api/anomalies?limit=60');
+    if (!response.ok) return;
+    const records = await response.json();
+    const merged = [...records, ...closedAnomalies];
+    closedAnomalies = [...new Map(merged.map(record => [`${record.zone_id}:${record.start_timestamp}`, record])).values()]
+      .sort((a, b) => String(b.start_timestamp).localeCompare(String(a.start_timestamp))).slice(0, 60);
+    renderAnomalyFeed();
+  }catch(e){}
+}
+
+function pushActuation(action){
+  const feed = document.getElementById('actuation-feed');
+  if (feed.firstChild && feed.firstChild.textContent === 'No actions yet') feed.innerHTML = '';
+  const row = document.createElement('div');
+  row.className = 'action-entry';
+  row.textContent = `${new Date().toLocaleTimeString()} · ${action.message || `${action.action} ${action.target}=${action.value} · ${action.zone_id}`}`;
+  feed.prepend(row);
+  while (feed.children.length > 40) feed.lastChild.remove();
+}
+
+async function loadTopology(){
+  try{
+    const data = await (await fetch('/api/topology')).json();
+    document.getElementById('utility-rate').value = data.utility_rate_usd_per_kwh;
+    const tree = document.getElementById('topology-tree');
+    tree.innerHTML = '';
+    const buildings = document.createElement('ul');
+    data.buildings.forEach(building => {
+      const b = document.createElement('li');
+      b.textContent = `Building ${building.building_id}`;
+      const floors = document.createElement('ul');
+      Object.values(building.floors).forEach(floor => {
+        const f = document.createElement('li');
+        f.textContent = `Floor ${floor.floor_id}`;
+        const zones = document.createElement('ul');
+        floor.zones.forEach(zone => {
+          const item = document.createElement('li');
+          item.textContent = `${zone.zone_id} · ${zone.zone_type} · ${zone.area_m2} m² × ${zone.ceiling_height_m} m = ${zone.volume_m3} m³ · ${zone.operating_start}–${zone.operating_end}`;
+          const edit = document.createElement('button');
+          edit.type = 'button'; edit.className = 'header-link'; edit.textContent = 'Edit';
+          edit.style.marginLeft = '8px';
+          edit.addEventListener('click', () => editZone(zone));
+          item.appendChild(edit); zones.appendChild(item);
+        });
+        f.appendChild(zones); floors.appendChild(f);
+      });
+      b.appendChild(floors); buildings.appendChild(b);
+    });
+    tree.appendChild(buildings);
+  }catch(e){
+    document.getElementById('manager-status').textContent = `Could not load topology: ${e.message}`;
+  }
+}
+
+function editZone(zone){
+  document.getElementById('zone-edit-id').value = zone.zone_id;
+  document.getElementById('zone-id').value = zone.zone_id;
+  document.getElementById('zone-id').disabled = true;
+  document.getElementById('zone-building').value = zone.building_id;
+  document.getElementById('zone-floor').value = zone.floor_id;
+  document.getElementById('zone-area').value = zone.area_m2;
+  document.getElementById('zone-height').value = zone.ceiling_height_m;
+  document.getElementById('zone-occupancy').value = zone.occupancy_max;
+  document.getElementById('zone-type').value = zone.zone_type;
+  document.getElementById('zone-open').value = zone.operating_start;
+  document.getElementById('zone-close').value = zone.operating_end;
+  document.getElementById('zone-rate').value = zone.utility_rate_usd_per_kwh ?? '';
+  document.getElementById('zone-save').textContent = 'Save zone';
+  document.getElementById('zone-cancel').style.display = 'inline-block';
+}
+
+function resetZoneForm(){
+  document.getElementById('zone-form').reset();
+  document.getElementById('zone-edit-id').value = '';
+  document.getElementById('zone-id').disabled = false;
+  document.getElementById('zone-save').textContent = 'Create zone';
+  document.getElementById('zone-cancel').style.display = 'none';
 }
 
 async function refresh(initial=false){
@@ -298,21 +485,20 @@ function connect(){
     if (msg.type === 'hello'){
       loadZones(msg.zones);
       refresh(true);
+      loadAnomalyFeed();
     } else if (msg.type === 'history'){
       (msg.points||[]).filter(p => p.zone_id === zoneId()).forEach(p => { updateLiveMetrics(p); pushPoint(p); });
       refresh(true);
     } else if (msg.type === 'point' && msg.point.zone_id === zoneId()) {
       updateLiveMetrics(msg.point); pushPoint(msg.point);
-    } else if (msg.type === 'verdict' && msg.verdict.is_anomaly) {
-      showAnomalyAlert(msg.verdict.zone_id, msg.verdict.diagnosis || 'Energy anomaly', msg.verdict.explanation);
-    } else if (msg.type === 'verdict') {
-      alertedZones.delete(msg.verdict.zone_id);
-      renderAnomalyAlerts();
-    } else if (msg.type === 'anomaly') pushAnomaly(msg.anomaly);
+    } else if (msg.type === 'verdict') pushVerdict(msg.verdict);
+    else if (msg.type === 'anomaly') pushAnomaly(msg.anomaly);
+    else if (msg.type === 'actuation') pushActuation(msg.actuation);
   };
   ws.onclose = () => { if (ws === currentSocket) setTimeout(connect, 1500); };
 }
 connect();
+loadTopology();
 
 document.getElementById('zone-select').addEventListener('change', () => {
   Object.values(charts).forEach(chart => {
@@ -324,12 +510,53 @@ document.getElementById('zone-select').addEventListener('change', () => {
   });
   liveMetricDefs.forEach(([key]) => { document.getElementById(`metric-${key}`).textContent = '—'; });
   document.getElementById('live-updated').textContent = 'Waiting for selected zone data…';
-  renderAnomalyAlerts();
   connect();
 });
 
-document.getElementById('dismiss-alert').addEventListener('click', () => {
-  document.getElementById('anomaly-alert').classList.remove('visible');
+document.getElementById('zone-form').addEventListener('submit', async ev => {
+  ev.preventDefault();
+  const editing = document.getElementById('zone-edit-id').value;
+  const body = {
+    building_id:document.getElementById('zone-building').value,
+    floor_id:document.getElementById('zone-floor').value,
+    zone_id:document.getElementById('zone-id').value,
+    zone_type:document.getElementById('zone-type').value,
+    area_m2:Number(document.getElementById('zone-area').value),
+    ceiling_height_m:Number(document.getElementById('zone-height').value),
+    occupancy_max:Number(document.getElementById('zone-occupancy').value),
+    operating_start:document.getElementById('zone-open').value,
+    operating_end:document.getElementById('zone-close').value,
+    utility_rate_usd_per_kwh:document.getElementById('zone-rate').value === '' ? null : Number(document.getElementById('zone-rate').value),
+  };
+  const url = editing ? `/api/topology/zones/${encodeURIComponent(editing)}` : '/api/topology/zones';
+  const response = await fetch(url,{method:editing?'PATCH':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const result = await response.json();
+  document.getElementById('manager-status').textContent = response.ok ? `Saved ${result.zone_id} · volume ${result.volume_m3} m³` : (result.detail || 'Could not save zone');
+  if(response.ok){ resetZoneForm(); await loadTopology(); connect(); }
+});
+
+document.getElementById('zone-cancel').addEventListener('click', resetZoneForm);
+document.getElementById('save-rate').addEventListener('click', async () => {
+  const rate = Number(document.getElementById('utility-rate').value);
+  const response = await fetch('/api/config/utility-rate',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({utility_rate_usd_per_kwh:rate})});
+  document.getElementById('manager-status').textContent = response.ok ? 'Utility rate saved and applied to future anomaly costs.' : 'Could not save utility rate.';
+});
+
+document.getElementById('train-model').addEventListener('click', async () => {
+  const file = document.getElementById('training-file').files[0];
+  if(!file){ document.getElementById('manager-status').textContent = 'Choose a CSV file first.'; return; }
+  const form = new FormData(); form.append('file',file);
+  const button = document.getElementById('train-model');
+  button.disabled = true; button.textContent = 'Training…';
+  try{
+    const response = await fetch('/api/v1/train',{method:'POST',body:form});
+    const result = await response.json();
+    document.getElementById('manager-status').textContent = response.ok
+      ? `Training complete · ${result.total_rows} uploaded rows · zones: ${Object.keys(result.rows_by_zone).join(', ')}`
+      : (result.detail || 'Training failed');
+    if(response.ok) document.getElementById('badge-detector').textContent = 'detector retrained';
+  }catch(e){ document.getElementById('manager-status').textContent = `Training failed: ${e.message}`; }
+  finally{ button.disabled = false; button.textContent = 'Upload and retrain'; }
 });
 
 document.getElementById('btn-report').addEventListener('click', async () => {
@@ -339,6 +566,26 @@ document.getElementById('btn-report').addEventListener('click', async () => {
   a.href = URL.createObjectURL(blob); a.download = 'energy-audit-report.md'; a.click();
   URL.revokeObjectURL(a.href);
 });
+
+document.querySelectorAll('.view-tab').forEach(button => button.addEventListener('click', () => {
+  const target = button.dataset.view;
+  document.querySelectorAll('.view-tab').forEach(tab => tab.classList.toggle('active', tab === button));
+  document.querySelectorAll('.view').forEach(view => { view.hidden = view.id !== `view-${target}`; });
+  if (target === 'operations') Object.values(charts).forEach(chart => chart.resize());
+  if (target === 'admin') loadTopology();
+}));
+
+const simOverlay = document.getElementById('sim-overlay');
+const simFrame = document.getElementById('simulator-frame');
+function closeSimulator(){ simOverlay.hidden = true; }
+document.getElementById('open-simulator').addEventListener('click', () => {
+  if (!simFrame.src) simFrame.src = '/simulator?embed=1';
+  simOverlay.hidden = false;
+  document.getElementById('close-simulator').focus();
+});
+document.getElementById('close-simulator').addEventListener('click', closeSimulator);
+simOverlay.addEventListener('click', event => { if (event.target === simOverlay) closeSimulator(); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && !simOverlay.hidden) closeSimulator(); });
 
 setInterval(refresh, 5000);
 setInterval(() => {

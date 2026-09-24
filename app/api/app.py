@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -22,9 +22,20 @@ from ..schemas import (
     HealthResponse,
     InjectionState,
     SimulatorCommand,
+    ZoneCreate,
+    ZoneUpdate,
+    UtilityRateUpdate,
     ZoneStatus,
 )
-from ..zones import ZONE_CATALOG
+from ..zones import ZoneDef
+from ..ml.training import train_from_points
+from ..schemas import Telemetry, TelemetryPoint
+import csv
+import io
+import math
+from datetime import datetime
+from dataclasses import asdict, replace
+from starlette.concurrency import run_in_threadpool
 
 
 def _static_dir() -> str:
@@ -56,14 +67,14 @@ def create_app(settings: Settings, lifespan) -> FastAPI:
             detector_loaded=rt.detector is not None,
             baseline_model_zones=rt.baseline_model_zones(),
             storage_backend=rt.store.kind if rt.store else "n/a",
-            zones=[z.zone_id for z in ZONE_CATALOG],
+            zones=list(rt.zones),
             injection=[k.value for k in AnomalyKind],
             uptime_seconds=round(rt.uptime_seconds(), 1),
             samples_processed=rt.samples_processed,
         )
 
     @app.get("/api/zones")
-    async def zones() -> List[Dict[str, Any]]:
+    async def zones(request: Request) -> List[Dict[str, Any]]:
         return [
             {
                 "zone_id": z.zone_id,
@@ -72,20 +83,101 @@ def create_app(settings: Settings, lifespan) -> FastAPI:
                 "plug_peak_kw": z.plug_peak_kw,
                 "hvac_base_kw": z.hvac_base_kw,
             }
-            for z in ZONE_CATALOG
+            for z in request.app.state.runtime.zones.values()
         ]
+
+    @app.get("/api/topology")
+    async def topology(request: Request) -> Dict[str, Any]:
+        rt: AuditorRuntime = request.app.state.runtime
+        buildings: Dict[str, Dict[str, Any]] = {}
+        for zone in rt.zones.values():
+            building = buildings.setdefault(zone.building_id, {"building_id": zone.building_id, "floors": {}})
+            floor = building["floors"].setdefault(zone.floor_id, {"floor_id": zone.floor_id, "zones": []})
+            floor["zones"].append(_zone_payload(zone))
+        return {"buildings": list(buildings.values()), "utility_rate_usd_per_kwh": rt.settings.utility_rate_usd_per_kwh}
+
+    @app.post("/api/topology/zones")
+    async def create_zone(body: ZoneCreate, request: Request) -> Dict[str, Any]:
+        rt: AuditorRuntime = request.app.state.runtime
+        if body.zone_id in rt.zones:
+            raise HTTPException(status_code=409, detail="zone_id already exists")
+        zone = ZoneDef(
+            zone_id=body.zone_id, building_id=body.building_id, floor_id=body.floor_id,
+            area_m2=body.area_m2, ceiling_height_m=body.ceiling_height_m,
+            occupancy_max=body.occupancy_max, zone_type=body.zone_type,
+            operating_start=body.operating_start, operating_end=body.operating_end,
+            utility_rate_usd_per_kwh=body.utility_rate_usd_per_kwh,
+            lighting_peak_kw=round(body.area_m2 * 0.035, 2),
+            plug_peak_kw=round(body.area_m2 * 0.04, 2),
+            hvac_base_kw=round(body.area_m2 * 0.03, 2),
+        )
+        await rt.register_zone(zone)
+        if rt.store is not None:
+            await rt.store.save_zone_config(asdict(zone))
+        return _zone_payload(zone)
+
+    @app.patch("/api/topology/zones/{zone_id}")
+    async def update_zone(zone_id: str, body: ZoneUpdate, request: Request) -> Dict[str, Any]:
+        rt: AuditorRuntime = request.app.state.runtime
+        zone = rt.zones.get(zone_id)
+        if zone is None:
+            raise HTTPException(status_code=404, detail="zone not found")
+        changes = body.model_dump(exclude_unset=True)
+        changes = {key: value for key, value in changes.items() if value is not None or key == "utility_rate_usd_per_kwh"}
+        if changes.get("area_m2") is not None:
+            changes["lighting_peak_kw"] = round(changes["area_m2"] * 0.035, 2)
+            changes["plug_peak_kw"] = round(changes["area_m2"] * 0.04, 2)
+            changes["hvac_base_kw"] = round(changes["area_m2"] * 0.03, 2)
+        updated = replace(zone, **changes)
+        await rt.register_zone(updated, replace=True)
+        if rt.store is not None:
+            await rt.store.save_zone_config(asdict(updated))
+        return _zone_payload(updated)
+
+    @app.put("/api/config/utility-rate")
+    async def update_utility_rate(body: UtilityRateUpdate, request: Request) -> Dict[str, float]:
+        rt: AuditorRuntime = request.app.state.runtime
+        rt.settings.utility_rate_usd_per_kwh = body.utility_rate_usd_per_kwh
+        rt.analytics.rate = body.utility_rate_usd_per_kwh
+        rt.analytics.zone_rates = {
+            zone.zone_id: (
+                zone.utility_rate_usd_per_kwh
+                if zone.utility_rate_usd_per_kwh is not None
+                else body.utility_rate_usd_per_kwh
+            )
+            for zone in rt.zones.values()
+        }
+        if rt.store is not None:
+            await rt.store.save_app_config("utility_rate_usd_per_kwh", body.utility_rate_usd_per_kwh)
+        return {"utility_rate_usd_per_kwh": rt.settings.utility_rate_usd_per_kwh}
+
+    @app.post("/api/v1/train")
+    async def train_model(request: Request, file: UploadFile = File(...)) -> Dict[str, Any]:
+        if not file.filename or not file.filename.lower().endswith(".csv"):
+            raise HTTPException(status_code=400, detail="upload a CSV file")
+        content = await file.read(25 * 1024 * 1024 + 1)
+        if len(content) > 25 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="CSV must be 25 MB or smaller")
+        try:
+            points = _parse_training_csv(content)
+            counts = await run_in_threadpool(train_from_points, points, request.app.state.runtime.settings)
+        except (ValueError, UnicodeDecodeError, csv.Error) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        rt: AuditorRuntime = request.app.state.runtime
+        rt.reload_models()
+        return {"status": "trained", "rows_by_zone": counts, "total_rows": len(points)}
 
     @app.get("/api/status", response_model=List[ZoneStatus])
     async def status(request: Request) -> List[ZoneStatus]:
         rt: AuditorRuntime = request.app.state.runtime
-        return [_build_zone_status(rt, z.zone_id) for z in ZONE_CATALOG]
+        return [_build_zone_status(rt, z.zone_id) for z in rt.zones.values()]
 
     @app.get("/api/telemetry/current")
     async def telemetry_current(request: Request) -> Dict[str, Any]:
         rt: AuditorRuntime = request.app.state.runtime
         out: Dict[str, Any] = {}
         if rt.store is not None:
-            for z in ZONE_CATALOG:
+            for z in rt.zones.values():
                 recent = await rt.store.recent_telemetry(z.zone_id, limit=1)
                 if recent:
                     out[z.zone_id] = recent[-1].model_dump()
@@ -144,7 +236,7 @@ def create_app(settings: Settings, lifespan) -> FastAPI:
         await websocket.send_json(
             {
                 "type": "hello",
-                "zones": [z.zone_id for z in ZONE_CATALOG],
+                "zones": list(rt.zones),
                 "interval_seconds": rt.settings.emit_interval_seconds,
             }
         )
@@ -193,7 +285,7 @@ def create_app(settings: Settings, lifespan) -> FastAPI:
             async def _forward() -> None:
                 while True:
                     message = await queue.get()
-                    if message.get("type") in ("injection", "anomaly", "verdict", "log"):
+                    if message.get("type") in ("point", "injection", "anomaly", "verdict", "log", "actuation"):
                         await websocket.send_json(message)
 
             forwarder = asyncio.create_task(_forward())
@@ -232,3 +324,60 @@ def _build_zone_status(rt: AuditorRuntime, zone_id: str) -> ZoneStatus:
         exposure_usd=round(sum(a.financial_waste_usd for a in zone_anoms), 2),
         exposure_kwh=round(sum(a.energy_wasted_kwh for a in zone_anoms), 3),
     )
+
+
+def _zone_payload(zone: ZoneDef) -> Dict[str, Any]:
+    return {
+        "zone_id": zone.zone_id,
+        "building_id": zone.building_id,
+        "floor_id": zone.floor_id,
+        "area_m2": zone.area_m2,
+        "ceiling_height_m": zone.ceiling_height_m,
+        "volume_m3": round(zone.volume_m3, 2),
+        "occupancy_max": zone.occupancy_max,
+        "zone_type": zone.zone_type,
+        "operating_start": zone.operating_start,
+        "operating_end": zone.operating_end,
+        "utility_rate_usd_per_kwh": zone.utility_rate_usd_per_kwh,
+        "lighting_peak_kw": zone.lighting_peak_kw,
+        "plug_peak_kw": zone.plug_peak_kw,
+        "hvac_base_kw": zone.hvac_base_kw,
+    }
+
+
+def _parse_training_csv(content: bytes) -> List[TelemetryPoint]:
+    """Parse a strict UTF-8 CSV with one timestamped row per zone sample."""
+    reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+    required = {
+        "timestamp", "zone_id", "occupancy_count", "co2_ppm",
+        "humidity_percent", "temp_indoor_c", "temp_outdoor_c",
+        "hvac_kw", "lighting_kw", "plug_load_kw",
+    }
+    headers = set(reader.fieldnames or [])
+    missing = required - headers
+    if missing:
+        raise ValueError("missing CSV columns: " + ", ".join(sorted(missing)))
+    points: List[TelemetryPoint] = []
+    for line, row in enumerate(reader, start=2):
+        try:
+            timestamp = (row.get("timestamp") or "").strip()
+            datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            values = {key: float(row[key]) for key in required - {"timestamp", "zone_id"}}
+            if any(not math.isfinite(value) for value in values.values()):
+                raise ValueError("non-finite numeric value")
+            if values["occupancy_count"] < 0 or not values["occupancy_count"].is_integer():
+                raise ValueError("occupancy_count must be a non-negative integer")
+            telemetry = Telemetry(
+                **{**values, "occupancy_count": int(values["occupancy_count"])}
+            )
+            points.append(TelemetryPoint(
+                timestamp=timestamp,
+                building_id=row.get("building_id") or "csv_upload",
+                zone_id=(row.get("zone_id") or "").strip(),
+                telemetry=telemetry,
+            ))
+        except Exception as exc:
+            raise ValueError(f"invalid CSV row {line}: {exc}") from exc
+    if not points:
+        raise ValueError("CSV contains no data rows")
+    return points
