@@ -1,0 +1,19 @@
+# AI Energy-Waste Auditor - runtime dependencies
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.7
+pydantic-settings>=2.2
+python-dotenv>=1.0
+numpy>=1.26
+scikit-learn>=1.4
+joblib>=1.4
+httpx>=0.27
+# Optional Postgres wire-protocol persistence (Supabase/RDS/local pg).
+asyncpg>=0.29
+
+# Test tooling.
+pytest>=8.0
+pytest-asyncio>=0.23
+
+# Training / CLI extras are thin wrappers over the same runtime deps, so the
+# single requirements file above covers model training too.

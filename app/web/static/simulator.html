@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Energy-Waste Auditor · Simulator Control</title>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8;
+    --green:#22c55e; --red:#ef4444; --orange:#f97316; --yellow:#eab308;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:14px 22px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:18px;margin:0;letter-spacing:.3px}
+  header h1 .accent{color:var(--orange)}
+  .spacer{flex:1}
+  .badge{font-size:11px;padding:3px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);background:#0b1220}
+  main{max-width:1080px;margin:0 auto;padding:18px 22px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px}
+  .zone-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  .zone-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .marker-dot{width:13px;height:13px;border-radius:50%;display:inline-block}
+  .zone-head h2{margin:0;font-size:15px}
+  .pill{font-size:11px;padding:2px 8px;border-radius:20px;border:1px solid var(--line);color:var(--muted);background:#0b1220}
+  .faults{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  button{font-size:12.5px;border-radius:9px;padding:10px 10px;cursor:pointer;border:1px solid var(--line);
+         background:#0b1220;color:var(--text);text-align:left;transition:all .12s}
+  button:hover{border-color:var(--orange)}
+  button.active{background:#7c2d12;border-color:var(--orange);color:#ffedd5}
+  button.ghost{text-align:center;color:var(--muted)}
+  button.ghost:hover{border-color:var(--red);color:var(--red)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:16px}
+  .panel h3{margin:0 0 8px;font-size:13px;color:var(--muted)}
+  .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;max-height:260px;overflow:auto;line-height:1.6}
+  .log div{white-space:pre-wrap}
+  .glowred{box-shadow:0 0 18px rgba(239,68,68,.35)}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Energy-Waste Auditor <span class="accent">· Simulator / Injection Control</span></h1>
+  <div class="spacer"></div>
+  <span class="badge" id="conn">connecting…</span>
+</header>
+<main>
+  <div class="grid" id="zones"></div>
+  <div class="panel">
+    <h3>Pipeline log</h3>
+    <div class="log" id="log"><div class="muted">waiting for runtime…</div></div>
+  </div>
+</main>
+
+<script>
+const KINDS = [
+  {key:'hvac_overventilation', label:'Inject HVAC Over-Ventilation',   desc:'spike hvac_kw · clamp CO₂ → 400 ppm'},
+  {key:'thermal_envelope_leak',label:'Inject Thermal Envelope Leak',   desc:'spike hvac_kw + forced humidity rise'},
+  {key:'unoccupied_lighting',  label:'Trigger Unoccupied Lighting',    desc:'occupancy → 0 · lighting → peak'},
+  {key:'equipment_drift',     label:'Trigger Equipment Drift',        desc:'permanent plug-load step ~+3.4 kW'},
+];
+const HEX = {green:'#22c55e', red:'#ef4444', orange:'#f97316', yellow:'#eab308'};
+const zoneState = {};   // zone -> Set(active kinds)
+const controls = {};    // zone.kind -> button ref
+let ws = null;
+
+function labelFor(kind){
+  const k = KINDS.find(k => k.key === kind);
+  return k ? k.label : kind;
+}
+
+function buildZones(zones, kinds){
+  const wrap = document.getElementById('zones');
+  wrap.innerHTML = '';
+  Object.values(zones).forEach(zin => {
+    const zone = zin.zone;
+    const card = document.createElement('div');
+    card.className = 'zone-card';
+    card.id = 'zc-'+zone;
+    card.innerHTML = `
+      <div class="zone-head">
+        <span class="marker-dot" style="background:var(--green)"></span>
+        <h2>${zone}</h2>
+        <span class="pill" id="state-${zone}">normal</span>
+        <div class="spacer"></div>
+        <button class="ghost" id="reset-${zone}">Reset zone</button>
+      </div>
+      <div class="faults" id="faults-${zone}"></div>`;
+    wrap.appendChild(card);
+
+    const faults = card.querySelector('#faults-'+zone);
+    kinds.forEach(kind => {
+      const btn = document.createElement('button');
+      const meta = KINDS.find(k => k.key === kind) || {};
+      btn.innerHTML = `<b>${meta.label || kind}</b><br><span class="muted" style="font-size:10.5px">${meta.desc || ''}</span>`;
+      btn.dataset.kind = kind;
+      btn.addEventListener('click', () => send({
+        action: isActive(zone, kind) ? 'clear' : 'inject',
+        zone, anomaly: kind
+      }));
+      faults.appendChild(btn);
+      controls[zone+'.'+kind] = btn;
+    });
+
+    document.getElementById('reset-'+zone).addEventListener('click', () => send({action:'reset', zone}));
+  });
+  // Global reset all
+  const g = document.createElement('div');
+  g.style.cssText = 'display:flex;justify-content:flex-end;margin-bottom:12px';
+  g.innerHTML = `<button class="ghost" id="reset-all" style="padding:8px 16px">Reset all zones</button>`;
+  document.querySelector('main').insertBefore(g, wrap);
+  document.getElementById('reset-all').addEventListener('click', () => send({action:'reset_all', zone:'floor_1_west'}));
+}
+
+function isActive(zone, kind){
+  return (zoneState[zone] && zoneState[zone].has(kind)) || false;
+}
+
+function renderState(state){
+  zoneState[state.zone] = new Set(state.active || []);
+  const pill = document.getElementById('state-'+state.zone);
+  if (pill) pill.textContent = state.injected_state || 'normal';
+  KINDS.forEach(k => {
+    const b = controls[state.zone+'.'+k.key];
+    if (b) b.classList.toggle('active', isActive(state.zone, k.key));
+  });
+}
+
+function onVerdict(v){
+  const dot = document.querySelector(`#zc-${v.zone_id} .marker-dot`);
+  if (dot){
+    dot.style.background = HEX[v.marker] || HEX.green;
+    if (v.marker === 'red' || v.marker === 'orange') {
+      document.getElementById('zc-'+v.zone_id).classList.add('glowred');
+    } else {
+      document.getElementById('zc-'+v.zone_id).classList.remove('glowred');
+    }
+  }
+}
+
+function setLog(lines){
+  const box = document.getElementById('log');
+  box.innerHTML = '';
+  (lines || []).reverse().forEach(l => {
+    const d = document.createElement('div'); d.textContent = l; box.appendChild(d);
+  });
+}
+
+function appLog(line){
+  const box = document.getElementById('log');
+  if (box.firstChild && box.firstChild.textContent === 'waiting for runtime…') box.innerHTML = '';
+  const d = document.createElement('div'); d.textContent = line; box.prepend(d);
+  while (box.children.length > 60) box.lastChild.remove();
+}
+
+function send(cmd){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(cmd)); }
+
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/ws/simulator`);
+  ws.onopen = () => { document.getElementById('conn').textContent = 'connected'; };
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'ready'){
+      buildZones(msg.zones, msg.kinds);
+      Object.values(msg.zones).forEach(z => renderState(z));
+      setLog(msg.log || []);
+    } else if (msg.type === 'state') renderState(msg.state);
+    else if (msg.type === 'injection') renderState(msg.state);
+    else if (msg.type === 'verdict') onVerdict(msg.verdict);
+    else if (msg.type === 'log') setLog(msg.lines);
+    else if (msg.type === 'anomaly') appLog(`CLOSED ${msg.anomaly.diagnosis} · ${msg.anomaly.zone_id} · ${msg.anomaly.energy_wasted_kwh.toFixed(2)} kWh · $${msg.anomaly.financial_waste_usd.toFixed(2)}`);
+  };
+  ws.onclose = () => { document.getElementById('conn').textContent = 'reconnecting…'; setTimeout(connect, 1200); };
+}
+connect();
+</script>
+</body>
+</html>

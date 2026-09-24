@@ -1,0 +1,27 @@
+# Virtual environments (machine-specific; recreate locally).
+.venv/
+venv/
+env/
+
+# Python bytecode / caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets / environment (Supabase keys, etc.).
+.env
+.env.local
+
+# Local logs and scratch files.
+*.log
+*.tmp
+
+# OS noise.
+.DS_Store
+Thumbs.db
+
+# Local tooling state.
+.vscode/
+.idea/

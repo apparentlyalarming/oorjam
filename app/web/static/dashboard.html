@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Energy-Waste Auditor · Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --line:#334155; --text:#e2e8f0; --muted:#94a3b8;
+    --green:#22c55e; --red:#ef4444; --orange:#f97316; --yellow:#eab308;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:14px 22px;background:var(--panel);border-bottom:1px solid var(--line)}
+  header h1{font-size:18px;margin:0;letter-spacing:.3px}
+  header h1 .accent{color:var(--yellow)}
+  .spacer{flex:1}
+  .badge{font-size:11px;padding:3px 9px;border-radius:20px;border:1px solid var(--line);color:var(--muted);background:#0b1220}
+  main{max-width:1200px;margin:0 auto;padding:18px 22px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:18px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .card h3{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:600}
+  .zone-row{display:flex;align-items:center;justify-content:space-between}
+  .marker-dot{width:12px;height:12px;border-radius:50%;display:inline-block;margin-right:6px;vertical-align:middle}
+  .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:18px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .kpi .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .kpi .value{font-size:26px;font-weight:700;margin-top:2px}
+  .charts-grid{display:grid;grid-template-columns:1fr;gap:14px;margin-bottom:18px}
+  .chart-panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .chart-panel h3{margin:0 0 6px;font-size:13px;color:var(--muted)}
+  .chart-wrap{position:relative;height:210px}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px}
+  .toolbar select{background:#0b1220;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:13px}
+  .legend{display:flex;gap:14px;font-size:12px;color:var(--muted)}
+  .legend span i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+  .grid2{display:grid;grid-template-columns:1.6fr 1fr;gap:14px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:600}
+  .feed{max-height:320px;overflow:auto}
+  .anom{display:flex;align-items:center;gap:8px;padding:7px 2px;border-bottom:1px solid var(--line);font-size:12.5px}
+  .muted{color:var(--muted)}
+  .pill{font-size:10px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Energy-Waste Auditor <span class="accent">· Dashboard</span></h1>
+  <div class="spacer"></div>
+  <span class="badge" id="badge-storage">storage —</span>
+  <span class="badge" id="badge-detector">detector —</span>
+  <span class="badge">uptime <span id="up">0</span>s</span>
+</header>
+<main>
+  <div class="kpis">
+    <div class="kpi"><div class="label">Energy wasted</div><div class="value" id="kpi-kwh">0.00 kWh</div></div>
+    <div class="kpi"><div class="label">Financial waste</div><div class="value" id="kpi-usd">$0.00</div></div>
+    <div class="kpi"><div class="label">Anomalies closed</div><div class="value" id="kpi-anoms">0</div></div>
+  </div>
+
+  <div class="cards" id="zone-cards"></div>
+
+  <div class="toolbar">
+    <select id="zone-select"></select>
+    <div class="legend">
+      <span><i style="background:var(--green)"></i>Normal</span>
+      <span><i style="background:var(--yellow)"></i>Baseline drift</span>
+      <span><i style="background:var(--orange)"></i>Mechanical inefficiency</span>
+      <span><i style="background:var(--red)"></i>High-severity waste</span>
+    </div>
+    <div class="spacer"></div>
+    <button id="btn-report" style="background:#0b1220;color:var(--yellow);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px">Download report (md)</button>
+  </div>
+
+  <div class="charts-grid" id="charts"></div>
+
+  <div class="grid2">
+    <div class="chart-panel">
+      <h3>Top recommendations (payback &rarr; ROI)</h3>
+      <table>
+        <thead><tr><th>#</th><th>Measure</th><th>Category</th><th>Capital</th><th>Annual net</th><th>Payback</th><th>ROI</th></tr></thead>
+        <tbody id="rec-body"></tbody>
+      </table>
+    </div>
+    <div class="chart-panel">
+      <h3>Anomaly feed</h3>
+      <div class="feed" id="feed"><div class="muted">Waiting for events…</div></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const HEX = {green:'#22c55e', red:'#ef4444', orange:'#f97316', yellow:'#eab308'};
+const MAX = 360;
+let upBase = 0;
+const zoneId = () => document.getElementById('zone-select').value;
+
+const chartDefs = [
+  {key:'hvac_kw',      title:'HVAC Consumption (kW)',   color:'#60a5fa'},
+  {key:'lighting_kw',  title:'Lighting Consumption (kW)', color:'#facc15'},
+  {key:'plug_load_kw', title:'Plug Load Consumption (kW)', color:'#2dd4bf'},
+];
+const charts = {};
+
+function makeChart(key, title, color){
+  const panel = document.createElement('div');
+  panel.className = 'chart-panel';
+  panel.innerHTML = `<h3>${title}</h3><div class="chart-wrap"><canvas></canvas></div>`;
+  document.getElementById('charts').appendChild(panel);
+  const ctx = panel.querySelector('canvas');
+  return new Chart(ctx, {
+    type:'line',
+    data:{labels:[], datasets:[{
+      label:title, data:[], borderColor:color, backgroundColor:'transparent',
+      borderWidth:1.6, tension:.25, pointRadius:3, pointHoverRadius:5,
+      pointBackgroundColor:[], pointBorderColor:[]
+    }]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      animation:{duration:0},
+      scales:{x:{ticks:{maxTicksLimit:8,color:'#64748b',font:{size:10}},grid:{display:false}},
+              y:{ticks:{color:'#64748b',font:{size:10}},grid:{color:'#1e293b'}}},
+      plugins:{legend:{display:false}}
+    }
+  });
+}
+
+chartDefs.forEach(c => charts[c.key] = makeChart(c.key, c.title, c.color));
+
+function pushPoint(p){
+  const m = p.marker || 'green';
+  const label = (p.timestamp||'').slice(11,19);
+  const t = p.telemetry || {};
+  ['hvac_kw','lighting_kw','plug_load_kw'].forEach(k => {
+    const ch = charts[k];
+    ch.data.labels.push(label);
+    ch.data.datasets[0].data.push(t[k] ?? 0);
+    const col = HEX[m] || HEX.green;
+    ch.data.datasets[0].pointBackgroundColor.push(col);
+    ch.data.datasets[0].pointBorderColor.push(col);
+    if (ch.data.labels.length > MAX){
+      ch.data.labels.shift(); ch.data.datasets[0].data.shift();
+      ch.data.datasets[0].pointBackgroundColor.shift(); ch.data.datasets[0].pointBorderColor.shift();
+    }
+  });
+  Object.values(charts).forEach(c => c.update('none'));
+}
+
+function renderZoneCards(status){
+  const wrap = document.getElementById('zone-cards');
+  wrap.innerHTML = '';
+  status.forEach(z => {
+    const el = document.createElement('div');
+    el.className = 'card';
+    el.id = 'card-'+z.zone_id;
+    el.innerHTML = `
+      <h3>${z.zone_id}</h3>
+      <div class="zone-row">
+        <span><span class="marker-dot" style="background:${HEX[z.marker]||HEX.green}"></span> ${z.severity||'normal'}</span>
+        <span class="pill">${z.injected_state||'normal'}</span>
+      </div>
+      <div style="margin-top:8px;color:var(--muted);font-size:12px">
+        ${z.diagnosis ? '⚠️ '+z.diagnosis : 'within normal envelope'}<br>
+        $${z.exposure_usd.toLocaleString(undefined,{maximumFractionDigits:2})} wasted
+      </div>`;
+    wrap.appendChild(el);
+  });
+}
+
+function renderReport(rep){
+  document.getElementById('kpi-kwh').textContent = rep.total_energy_wasted_kwh.toLocaleString(undefined,{maximumFractionDigits:2})+' kWh';
+  document.getElementById('kpi-usd').textContent = '$'+rep.total_financial_waste_usd.toLocaleString(undefined,{maximumFractionDigits:2});
+  document.getElementById('kpi-anoms').textContent = rep.total_anomalies;
+  const tb = document.getElementById('rec-body');
+  tb.innerHTML = '';
+  rep.top_recommendations.forEach((r,i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i+1}</td><td>${r.title}</td><td><span class="pill">${r.category}</span></td>`+
+      `<td>$${r.capital_cost_usd.toLocaleString()}</td>`+
+      `<td>$${r.annual_net_savings_usd.toLocaleString(undefined,{maximumFractionDigits:0})}</td>`+
+      `<td>${r.payback_months} mo</td><td>${r.annual_roi_pct}%</td>`;
+    tb.appendChild(tr);
+  });
+}
+
+function pushAnomaly(a){
+  const feed = document.getElementById('feed');
+  if (feed.firstChild && feed.firstChild.textContent.startsWith('Waiting')) feed.innerHTML='';
+  const el = document.createElement('div');
+  el.className = 'anom';
+  el.innerHTML = `<span class="marker-dot" style="background:${HEX[a.marker]||HEX.green}"></span>`+
+    `<b>${a.diagnosis}</b> · ${a.zone_id}`+
+    `<span class="spacer"></span>${a.energy_wasted_kwh.toFixed(2)} kWh · $${a.financial_waste_usd.toFixed(2)}`;
+  feed.prepend(el);
+  while (feed.children.length > 60) feed.lastChild.remove();
+}
+
+async function refresh(initial=false){
+  try{
+    const rep = await (await fetch('/api/analytics/current')).json();
+    renderReport(rep);
+  }catch(e){}
+  try{
+    const st = await (await fetch('/api/status')).json();
+    renderZoneCards(st);
+  }catch(e){}
+  if (initial){
+    try{
+      const h = await (await fetch('/api/health')).json();
+      document.getElementById('badge-storage').textContent = 'storage '+h.storage_backend;
+      document.getElementById('badge-detector').textContent = 'detector '+(h.detector_loaded?'loaded':'missing');
+      upBase = h.uptime_seconds - performance.now()/1000;
+    }catch(e){}
+  }
+}
+
+function loadZones(zones){
+  const sel = document.getElementById('zone-select');
+  sel.innerHTML = '';
+  zones.forEach(z => {
+    const o = document.createElement('option');
+    o.value = z; o.textContent = z; sel.appendChild(o);
+  });
+}
+
+function connect(){
+  const ws = new WebSocket(`ws://${location.host}/ws/telemetry` +
+    (zoneId() ? '?zone='+encodeURIComponent(zoneId()) : ''));
+  ws.onmessage = ev => {
+    const msg = JSON.parse(ev.data);
+    if (msg.type === 'hello'){
+      loadZones(msg.zones);
+      refresh(true);
+    } else if (msg.type === 'history'){
+      (msg.points||[]).forEach(pushPoint);
+      refresh(true);
+    } else if (msg.type === 'point') pushPoint(msg.point);
+    else if (msg.type === 'anomaly') pushAnomaly(msg.anomaly);
+  };
+  ws.onclose = () => setTimeout(connect, 1500);
+}
+connect();
+
+document.getElementById('zone-select').addEventListener('change', () => {
+  // Reconnect filters history + stream to the new zone.
+  connect();
+});
+
+document.getElementById('btn-report').addEventListener('click', async () => {
+  const md = await (await fetch('/api/report/markdown')).text();
+  const blob = new Blob([md], {type:'text/markdown'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = 'energy-audit-report.md'; a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+setInterval(refresh, 5000);
+setInterval(() => {
+  const t = document.getElementById('up');
+  if (t) t.textContent = Math.round((performance.now()/1000) + (upBase||0));
+}, 1000);
+</script>
+</body>
+</html>
